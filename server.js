@@ -8,6 +8,10 @@ app.post('/api/extract', async (req, res) => {
     const { url } = req.body;
     let result;
 
+    if (!url) {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+
     if (url.includes('instagram.com')) {
       result = await instagram(url);
     } else if (url.includes('tiktok.com')) {
@@ -21,15 +25,26 @@ app.post('/api/extract', async (req, res) => {
     } else if (url.includes('whatsapp.com')) {
       result = await whatsapp(url);
     } else {
-      // General fallback or direct link handling
       return res.json({ resolutions: { '720p': url } });
     }
 
-    // Extract media URL from result payload
-    const mediaUrl = result?.url || result?.[0]?.url || (Array.isArray(result) ? result[0] : null);
+    // Comprehensive fallback property parser for npm wrappers
+    let mediaUrl = null;
+    if (typeof result === 'string') {
+      mediaUrl = result;
+    } else if (result?.url) {
+      mediaUrl = result.url;
+    } else if (Array.isArray(result) && result.length > 0) {
+      mediaUrl = result[0]?.url || result[0];
+    } else if (result?.video) {
+      mediaUrl = result.video;
+    } else if (result?.download) {
+      mediaUrl = result.download;
+    }
 
     if (!mediaUrl) {
-      throw new Error('Could not parse media link from platform response.');
+      // Fallback: Return original URL if scraper fails so app can attempt direct read
+      mediaUrl = url;
     }
 
     res.json({ resolutions: { '720p': mediaUrl } });
