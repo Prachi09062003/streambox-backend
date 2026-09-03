@@ -1,9 +1,9 @@
 const express = require('express');
 
 const {
-  tiktok,
-  instagram,
-  facebook,
+  igdl,
+  ttdl,
+  fbdown,
   pinterest,
   twitter,
   whatsapp
@@ -17,17 +17,15 @@ app.use(express.json({ limit: '1mb' }));
 // BASIC ROUTES
 // ======================================================
 
-// Root / server status
 app.get('/', (req, res) => {
   res.json({
     success: true,
     service: 'StreamBox Backend',
     status: 'online',
-    version: '1.0.0'
+    version: '1.1.0'
   });
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
@@ -36,7 +34,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Browser test for the extract endpoint
 app.get('/api/extract', (req, res) => {
   res.json({
     success: true,
@@ -49,7 +46,6 @@ app.get('/api/extract', (req, res) => {
   });
 });
 
-
 // ======================================================
 // PLATFORM DETECTION
 // ======================================================
@@ -57,18 +53,21 @@ app.get('/api/extract', (req, res) => {
 function getPlatform(url) {
   const value = url.toLowerCase();
 
+  // Instagram
   if (
     value.includes('instagram.com')
   ) {
     return 'instagram';
   }
 
+  // TikTok
   if (
     value.includes('tiktok.com')
   ) {
     return 'tiktok';
   }
 
+  // Facebook
   if (
     value.includes('facebook.com') ||
     value.includes('fb.watch')
@@ -76,6 +75,7 @@ function getPlatform(url) {
     return 'facebook';
   }
 
+  // Pinterest
   if (
     value.includes('pinterest.com') ||
     value.includes('pin.it')
@@ -83,6 +83,7 @@ function getPlatform(url) {
     return 'pinterest';
   }
 
+  // Twitter / X
   if (
     value.includes('twitter.com') ||
     value.includes('x.com')
@@ -90,6 +91,7 @@ function getPlatform(url) {
     return 'twitter';
   }
 
+  // WhatsApp
   if (
     value.includes('whatsapp.com')
   ) {
@@ -98,7 +100,6 @@ function getPlatform(url) {
 
   return null;
 }
-
 
 // ======================================================
 // MEDIA URL EXTRACTION
@@ -109,51 +110,79 @@ function extractMediaUrl(result) {
     return null;
   }
 
-  // Result is a direct string
+  // Direct string
   if (typeof result === 'string') {
     return result;
   }
 
-  // Result has url
+  // Direct URL
   if (result.url) {
     return result.url;
   }
 
-  // Result has video
+  // Video
   if (result.video) {
     return result.video;
   }
 
-  // Result has data.url
+  // Download URL
+  if (result.download) {
+    return result.download;
+  }
+
+  // Media URL
+  if (result.media) {
+    return result.media;
+  }
+
+  // Data URL
   if (result.data?.url) {
     return result.data.url;
   }
 
-  // Result has data.video
+  // Data video
   if (result.data?.video) {
     return result.data.video;
   }
 
-  // Result is an array
+  // Data download
+  if (result.data?.download) {
+    return result.data.download;
+  }
+
+  // Data media
+  if (result.data?.media) {
+    return result.data.media;
+  }
+
+  // Array response
   if (Array.isArray(result) && result.length > 0) {
-    const first = result[0];
+    for (const item of result) {
 
-    if (typeof first === 'string') {
-      return first;
-    }
+      if (typeof item === 'string') {
+        return item;
+      }
 
-    if (first?.url) {
-      return first.url;
-    }
+      if (item?.url) {
+        return item.url;
+      }
 
-    if (first?.video) {
-      return first.video;
+      if (item?.video) {
+        return item.video;
+      }
+
+      if (item?.download) {
+        return item.download;
+      }
+
+      if (item?.media) {
+        return item.media;
+      }
     }
   }
 
   return null;
 }
-
 
 // ======================================================
 // MAIN EXTRACT API
@@ -163,7 +192,7 @@ app.post('/api/extract', async (req, res) => {
   try {
 
     // --------------------------------------------------
-    // 1. Validate request body
+    // 1. Validate request
     // --------------------------------------------------
 
     const { url } = req.body;
@@ -182,7 +211,6 @@ app.post('/api/extract', async (req, res) => {
       });
     }
 
-
     // --------------------------------------------------
     // 2. Clean URL
     // --------------------------------------------------
@@ -195,7 +223,6 @@ app.post('/api/extract', async (req, res) => {
         error: 'URL cannot be empty'
       });
     }
-
 
     // --------------------------------------------------
     // 3. Validate URL
@@ -212,7 +239,6 @@ app.post('/api/extract', async (req, res) => {
       });
     }
 
-
     // --------------------------------------------------
     // 4. Detect platform
     // --------------------------------------------------
@@ -226,7 +252,6 @@ app.post('/api/extract', async (req, res) => {
     console.log(
       `[EXTRACT] URL: ${cleanUrl}`
     );
-
 
     // --------------------------------------------------
     // 5. Unsupported platform
@@ -247,69 +272,123 @@ app.post('/api/extract', async (req, res) => {
       });
     }
 
-
     // --------------------------------------------------
-    // 6. Call downloader
+    // 6. Call correct downloader function
     // --------------------------------------------------
 
     let result;
 
     switch (platform) {
 
+      // ----------------------------------------------
+      // INSTAGRAM
+      // ----------------------------------------------
+
       case 'instagram':
-        console.log('[EXTRACT] Calling Instagram extractor...');
-        result = await instagram(cleanUrl);
+
+        console.log(
+          '[EXTRACT] Calling Instagram igdl()...'
+        );
+
+        result = await igdl(cleanUrl);
+
         break;
+
+      // ----------------------------------------------
+      // TIKTOK
+      // ----------------------------------------------
 
       case 'tiktok':
-        console.log('[EXTRACT] Calling TikTok extractor...');
-        result = await tiktok(cleanUrl);
+
+        console.log(
+          '[EXTRACT] Calling TikTok ttdl()...'
+        );
+
+        result = await ttdl(cleanUrl);
+
         break;
+
+      // ----------------------------------------------
+      // FACEBOOK
+      // ----------------------------------------------
 
       case 'facebook':
-        console.log('[EXTRACT] Calling Facebook extractor...');
-        result = await facebook(cleanUrl);
+
+        console.log(
+          '[EXTRACT] Calling Facebook fbdown()...'
+        );
+
+        result = await fbdown(cleanUrl);
+
         break;
+
+      // ----------------------------------------------
+      // PINTEREST
+      // ----------------------------------------------
 
       case 'pinterest':
-        console.log('[EXTRACT] Calling Pinterest extractor...');
+
+        console.log(
+          '[EXTRACT] Calling Pinterest pinterest()...'
+        );
+
         result = await pinterest(cleanUrl);
+
         break;
+
+      // ----------------------------------------------
+      // TWITTER / X
+      // ----------------------------------------------
 
       case 'twitter':
-        console.log('[EXTRACT] Calling Twitter/X extractor...');
+
+        console.log(
+          '[EXTRACT] Calling Twitter/X twitter()...'
+        );
+
         result = await twitter(cleanUrl);
+
         break;
 
+      // ----------------------------------------------
+      // WHATSAPP
+      // ----------------------------------------------
+
       case 'whatsapp':
-        console.log('[EXTRACT] Calling WhatsApp extractor...');
+
+        console.log(
+          '[EXTRACT] Calling WhatsApp whatsapp()...'
+        );
+
         result = await whatsapp(cleanUrl);
+
         break;
 
       default:
+
         return res.status(400).json({
           success: false,
           error: 'Platform is not supported'
         });
     }
 
-
     // --------------------------------------------------
-    // 7. Log extractor result
+    // 7. Log result
     // --------------------------------------------------
 
     console.log(
-      '[EXTRACT] Extractor returned:',
-      JSON.stringify(result)
+      '[EXTRACT] Extractor result received.'
     );
 
+    console.log(
+      JSON.stringify(result, null, 2)
+    );
 
     // --------------------------------------------------
-    // 8. Get media URL
+    // 8. Extract media URL
     // --------------------------------------------------
 
     const mediaUrl = extractMediaUrl(result);
-
 
     // --------------------------------------------------
     // 9. Check media URL
@@ -324,17 +403,19 @@ app.post('/api/extract', async (req, res) => {
       return res.status(404).json({
         success: false,
         platform: platform,
-        error: 'No downloadable media URL found'
+        error: 'No downloadable media URL found',
+        extractorResponse: result
       });
     }
 
+    // --------------------------------------------------
+    // 10. Validate media URL
+    // --------------------------------------------------
 
-    // --------------------------------------------------
-    // 10. Validate returned media URL
-    // --------------------------------------------------
+    let parsedMediaUrl;
 
     try {
-      new URL(mediaUrl);
+      parsedMediaUrl = new URL(mediaUrl);
     } catch (error) {
 
       console.error(
@@ -344,32 +425,28 @@ app.post('/api/extract', async (req, res) => {
 
       return res.status(500).json({
         success: false,
+        platform: platform,
         error: 'Extractor returned an invalid media URL'
       });
     }
-
 
     // --------------------------------------------------
     // 11. Successful response
     // --------------------------------------------------
 
     console.log(
-      `[EXTRACT] Success: ${platform}`
+      `[EXTRACT] Successfully extracted ${platform}`
     );
 
     return res.status(200).json({
       success: true,
       platform: platform,
       resolutions: {
-        '720p': mediaUrl
+        '720p': parsedMediaUrl.href
       }
     });
 
   } catch (error) {
-
-    // --------------------------------------------------
-    // Error handler
-    // --------------------------------------------------
 
     console.error(
       '[EXTRACT] ERROR:',
@@ -382,7 +459,6 @@ app.post('/api/extract', async (req, res) => {
     });
   }
 });
-
 
 // ======================================================
 // 404 HANDLER
@@ -397,20 +473,21 @@ app.use((req, res) => {
   });
 });
 
-
 // ======================================================
 // GLOBAL ERROR HANDLER
 // ======================================================
 
 app.use((err, req, res, next) => {
-  console.error('[SERVER ERROR]', err);
+  console.error(
+    '[SERVER ERROR]',
+    err
+  );
 
   res.status(500).json({
     success: false,
     error: 'Internal server error'
   });
 });
-
 
 // ======================================================
 // START SERVER
@@ -419,6 +496,7 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, '0.0.0.0', () => {
+
   console.log(
     `StreamBox Backend running on port ${PORT}`
   );
