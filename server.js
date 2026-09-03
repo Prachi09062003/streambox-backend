@@ -1,57 +1,167 @@
 const express = require('express');
-const { tiktok, instagram, facebook, pinterest, twitter, whatsapp } = require('btch-downloader');
+
+const {
+  tiktok,
+  instagram,
+  facebook,
+  pinterest,
+  twitter,
+  whatsapp
+} = require('btch-downloader');
+
 const app = express();
-app.use(express.json());
+
+app.use(express.json({ limit: '1mb' }));
+
+// Health check
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    service: 'StreamBox Backend',
+    status: 'online'
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'online'
+  });
+});
+
+function getPlatform(url) {
+  const value = url.toLowerCase();
+
+  if (value.includes('instagram.com')) return 'instagram';
+  if (value.includes('tiktok.com')) return 'tiktok';
+  if (value.includes('facebook.com') || value.includes('fb.watch')) {
+    return 'facebook';
+  }
+  if (value.includes('pinterest.com') || value.includes('pin.it')) {
+    return 'pinterest';
+  }
+  if (value.includes('twitter.com') || value.includes('x.com')) {
+    return 'twitter';
+  }
+  if (value.includes('whatsapp.com')) return 'whatsapp';
+
+  return null;
+}
 
 app.post('/api/extract', async (req, res) => {
   try {
-    let { url } = req.body;
-    if (!url) {
-      return res.status(400).json({ error: 'URL is required' });
+    const { url } = req.body;
+
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'URL is required'
+      });
     }
 
-    // Clean up tracking query parameters that break scrapers
-    url = url.split('?')[0];
+    let cleanUrl = url.trim();
+
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(cleanUrl);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid URL'
+      });
+    }
+
+    const platform = getPlatform(parsedUrl.href);
+
+    console.log(`Extract request: ${platform || 'unknown'}`);
+
+    if (!platform) {
+      return res.status(400).json({
+        success: false,
+        error: 'Unsupported platform'
+      });
+    }
 
     let result;
-    if (url.includes('instagram.com')) {
-      result = await instagram(url);
-    } else if (url.includes('tiktok.com')) {
-      result = await tiktok(url);
-    } else if (url.includes('facebook.com') || url.includes('fb.watch')) {
-      result = await facebook(url);
-    } else if (url.includes('pinterest.com') || url.includes('pin.it')) {
-      result = await pinterest(url);
-    } else if (url.includes('twitter.com') || url.includes('x.com')) {
-      result = await twitter(url);
-    } else if (url.includes('whatsapp.com')) {
-      result = await whatsapp(url);
-    } else {
-      return res.json({ resolutions: { '720p': url } });
+
+    switch (platform) {
+      case 'instagram':
+        result = await instagram(cleanUrl);
+        break;
+
+      case 'tiktok':
+        result = await tiktok(cleanUrl);
+        break;
+
+      case 'facebook':
+        result = await facebook(cleanUrl);
+        break;
+
+      case 'pinterest':
+        result = await pinterest(cleanUrl);
+        break;
+
+      case 'twitter':
+        result = await twitter(cleanUrl);
+        break;
+
+      case 'whatsapp':
+        result = await whatsapp(cleanUrl);
+        break;
     }
 
+    console.log('Extractor result:', JSON.stringify(result));
+
     let mediaUrl = null;
+
     if (typeof result === 'string') {
       mediaUrl = result;
     } else if (result?.url) {
       mediaUrl = result.url;
-    } else if (Array.isArray(result) && result.length > 0) {
-      mediaUrl = result[0]?.url || result[0];
     } else if (result?.video) {
       mediaUrl = result.video;
     } else if (result?.data?.url) {
       mediaUrl = result.data.url;
+    } else if (Array.isArray(result)) {
+      const first = result[0];
+
+      if (typeof first === 'string') {
+        mediaUrl = first;
+      } else if (first?.url) {
+        mediaUrl = first.url;
+      } else if (first?.video) {
+        mediaUrl = first.video;
+      }
     }
 
     if (!mediaUrl) {
-      return res.status(404).json({ error: 'Could not extract media stream link from target platform.' });
+      return res.status(404).json({
+        success: false,
+        error: 'No downloadable media URL found'
+      });
     }
 
-    res.json({ resolutions: { '720p': mediaUrl } });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.json({
+      success: true,
+      platform,
+      resolutions: {
+        '720p': mediaUrl
+      }
+    });
+
+  } catch (error) {
+    console.error('Extraction error:', error);
+
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Extraction failed'
+    });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`StreamBox backend running on port ${PORT}`);
+});
