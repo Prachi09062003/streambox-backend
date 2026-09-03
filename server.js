@@ -5,13 +5,15 @@ app.use(express.json());
 
 app.post('/api/extract', async (req, res) => {
   try {
-    const { url } = req.body;
-    let result;
-
+    let { url } = req.body;
     if (!url) {
       return res.status(400).json({ error: 'URL is required' });
     }
 
+    // Clean up tracking query parameters that break scrapers
+    url = url.split('?')[0];
+
+    let result;
     if (url.includes('instagram.com')) {
       result = await instagram(url);
     } else if (url.includes('tiktok.com')) {
@@ -28,7 +30,6 @@ app.post('/api/extract', async (req, res) => {
       return res.json({ resolutions: { '720p': url } });
     }
 
-    // Comprehensive fallback property parser for npm wrappers
     let mediaUrl = null;
     if (typeof result === 'string') {
       mediaUrl = result;
@@ -38,13 +39,12 @@ app.post('/api/extract', async (req, res) => {
       mediaUrl = result[0]?.url || result[0];
     } else if (result?.video) {
       mediaUrl = result.video;
-    } else if (result?.download) {
-      mediaUrl = result.download;
+    } else if (result?.data?.url) {
+      mediaUrl = result.data.url;
     }
 
     if (!mediaUrl) {
-      // Fallback: Return original URL if scraper fails so app can attempt direct read
-      mediaUrl = url;
+      return res.status(404).json({ error: 'Could not extract media stream link from target platform.' });
     }
 
     res.json({ resolutions: { '720p': mediaUrl } });
