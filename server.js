@@ -285,14 +285,16 @@ app.post('/api/extract', async (req, res) => {
       // ----------------------------------------------
 
       case 'instagram':
+  console.log('[EXTRACT] Calling Instagram igdl()...');
 
-        console.log(
-          '[EXTRACT] Calling Instagram igdl()...'
-        );
+  result = await igdl(cleanUrl);
 
-        result = await igdl(cleanUrl);
+  console.log('======================================');
+  console.log('INSTAGRAM RAW RESULT');
+  console.log(JSON.stringify(result, null, 2));
+  console.log('======================================');
 
-        break;
+  break;
 
       // ----------------------------------------------
       // TIKTOK
