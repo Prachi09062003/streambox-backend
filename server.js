@@ -120,44 +120,38 @@ function extractMediaUrl(result) {
     return result.url;
   }
 
-  // Video
+  // Direct video
   if (result.video) {
     return result.video;
   }
 
-  // Download URL
+  // Direct download
   if (result.download) {
     return result.download;
   }
 
-  // Media URL
+  // Direct media
   if (result.media) {
     return result.media;
   }
 
-  // Data URL
-  if (result.data?.url) {
-    return result.data.url;
-  }
+  // ----------------------------------------------
+  // IMPORTANT:
+  // btch-downloader returns Instagram data as:
+  //
+  // {
+  //   status: true,
+  //   result: [
+  //     {
+  //       thumbnail: "...",
+  //       url: "..."
+  //     }
+  //   ]
+  // }
+  // ----------------------------------------------
 
-  // Data video
-  if (result.data?.video) {
-    return result.data.video;
-  }
-
-  // Data download
-  if (result.data?.download) {
-    return result.data.download;
-  }
-
-  // Data media
-  if (result.data?.media) {
-    return result.data.media;
-  }
-
-  // Array response
-  if (Array.isArray(result) && result.length > 0) {
-    for (const item of result) {
+  if (Array.isArray(result.result) && result.result.length > 0) {
+    for (const item of result.result) {
 
       if (typeof item === 'string') {
         return item;
@@ -181,9 +175,35 @@ function extractMediaUrl(result) {
     }
   }
 
+  // ----------------------------------------------
+  // data object
+  // ----------------------------------------------
+
+  if (result.data) {
+    const dataUrl = extractMediaUrl(result.data);
+
+    if (dataUrl) {
+      return dataUrl;
+    }
+  }
+
+  // ----------------------------------------------
+  // Generic array
+  // ----------------------------------------------
+
+  if (Array.isArray(result) && result.length > 0) {
+    for (const item of result) {
+
+      const url = extractMediaUrl(item);
+
+      if (url) {
+        return url;
+      }
+    }
+  }
+
   return null;
 }
-
 // ======================================================
 // MAIN EXTRACT API
 // ======================================================
