@@ -28,7 +28,7 @@ app.get("/", (req, res) => {
     success: true,
     service: "StreamBox Backend",
     status: "online",
-    version: "2.0.0",
+    version: "2.1.0",
     supportedPlatforms: [
       "instagram",
       "tiktok",
@@ -45,11 +45,12 @@ app.get("/api/health", (req, res) => {
     success: true,
     status: "healthy",
     timestamp: new Date().toISOString(),
+    node: process.version,
   });
 });
 
 // ======================================================
-// URL HELPERS
+// URL VALIDATION
 // ======================================================
 
 function isValidHttpUrl(value) {
@@ -65,54 +66,102 @@ function isValidHttpUrl(value) {
   }
 }
 
-// Remove unnecessary tracking parameters
+// ======================================================
+// YOUTUBE HELPERS
+// ======================================================
+
+function extractYoutubeId(input) {
+  try {
+    const url = new URL(input);
+
+    const hostname = url.hostname.toLowerCase();
+
+    // youtu.be/VIDEO_ID
+    if (hostname === "youtu.be") {
+      const id = url.pathname
+        .split("/")
+        .filter(Boolean)[0];
+
+      return id || null;
+    }
+
+    // youtube.com
+    const pathnameParts = url.pathname
+      .split("/")
+      .filter(Boolean);
+
+    // /watch?v=
+    const watchId = url.searchParams.get("v");
+
+    if (watchId) {
+      return watchId;
+    }
+
+    // /shorts/VIDEO_ID
+    if (
+      pathnameParts[0] === "shorts" &&
+      pathnameParts[1]
+    ) {
+      return pathnameParts[1];
+    }
+
+    // /embed/VIDEO_ID
+    if (
+      pathnameParts[0] === "embed" &&
+      pathnameParts[1]
+    ) {
+      return pathnameParts[1];
+    }
+
+    // /live/VIDEO_ID
+    if (
+      pathnameParts[0] === "live" &&
+      pathnameParts[1]
+    ) {
+      return pathnameParts[1];
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ======================================================
+// CLEAN URL
+// ======================================================
+
 function cleanUrl(input) {
   try {
     const url = new URL(input.trim());
 
+    const hostname =
+      url.hostname.toLowerCase();
+
+    // --------------------------------------------------
     // YouTube
+    // --------------------------------------------------
+
     if (
-      url.hostname.includes("youtube.com") ||
-      url.hostname.includes("youtu.be")
+      hostname.includes("youtube.com") ||
+      hostname === "youtu.be"
     ) {
       const videoId =
-        url.searchParams.get("v") ||
-        extractYoutubeId(url.pathname);
+        extractYoutubeId(input);
 
       if (videoId) {
         return `https://www.youtube.com/watch?v=${videoId}`;
       }
     }
 
+    // --------------------------------------------------
+    // Other platforms
+    // --------------------------------------------------
+
     return url.toString();
   } catch {
     return input.trim();
   }
-}
-
-function extractYoutubeId(pathname) {
-  const parts = pathname.split("/").filter(Boolean);
-
-  if (parts.length === 0) {
-    return null;
-  }
-
-  // /shorts/VIDEO_ID
-  if (parts[0] === "shorts" && parts[1]) {
-    return parts[1];
-  }
-
-  // /embed/VIDEO_ID
-  if (parts[0] === "embed" && parts[1]) {
-    return parts[1];
-  }
-
-  // youtu.be/VIDEO_ID
-  if (parts[0]) {
-    return parts[0];
-  }
-
-  return null;
 }
 
 // ======================================================
@@ -128,20 +177,23 @@ function detectPlatform(input) {
     return null;
   }
 
-  const hostname = url.hostname.toLowerCase();
-  const pathname = url.pathname.toLowerCase();
+  const hostname =
+    url.hostname.toLowerCase();
 
   // Instagram
   if (
-    hostname.includes("instagram.com") ||
-    hostname.includes("instagr.am")
+    hostname === "instagram.com" ||
+    hostname.endsWith(".instagram.com") ||
+    hostname === "instagr.am" ||
+    hostname.endsWith(".instagr.am")
   ) {
     return "instagram";
   }
 
   // TikTok
   if (
-    hostname.includes("tiktok.com") ||
+    hostname === "tiktok.com" ||
+    hostname.endsWith(".tiktok.com") ||
     hostname === "vm.tiktok.com" ||
     hostname === "vt.tiktok.com"
   ) {
@@ -150,19 +202,19 @@ function detectPlatform(input) {
 
   // Facebook
   if (
-    hostname.includes("facebook.com") ||
-    hostname === "fb.watch" ||
-    hostname.endsWith(".facebook.com")
+    hostname === "facebook.com" ||
+    hostname.endsWith(".facebook.com") ||
+    hostname === "fb.watch"
   ) {
     return "facebook";
   }
 
-  // X / Twitter
+  // Twitter / X
   if (
-    hostname === "x.com" ||
-    hostname.endsWith(".x.com") ||
     hostname === "twitter.com" ||
-    hostname.endsWith(".twitter.com")
+    hostname.endsWith(".twitter.com") ||
+    hostname === "x.com" ||
+    hostname.endsWith(".x.com")
   ) {
     return "twitter";
   }
@@ -170,7 +222,6 @@ function detectPlatform(input) {
   // YouTube
   if (
     hostname === "youtube.com" ||
-    hostname === "www.youtube.com" ||
     hostname.endsWith(".youtube.com") ||
     hostname === "youtu.be"
   ) {
@@ -180,7 +231,6 @@ function detectPlatform(input) {
   // Pinterest
   if (
     hostname === "pinterest.com" ||
-    hostname === "www.pinterest.com" ||
     hostname.endsWith(".pinterest.com") ||
     hostname === "pin.it"
   ) {
@@ -195,9 +245,15 @@ function detectPlatform(input) {
 // ======================================================
 
 async function resolveRedirectUrl(inputUrl) {
-  const hostname = new URL(inputUrl).hostname.toLowerCase();
+  let hostname;
 
-  // Only resolve known short/share URLs.
+  try {
+    hostname =
+      new URL(inputUrl).hostname.toLowerCase();
+  } catch {
+    return inputUrl;
+  }
+
   const shouldResolve =
     hostname === "pin.it" ||
     hostname === "fb.watch" ||
@@ -207,32 +263,48 @@ async function resolveRedirectUrl(inputUrl) {
     return inputUrl;
   }
 
-  console.log("Resolving short/share URL:", inputUrl);
+  console.log(
+    "Resolving short/share URL:",
+    inputUrl
+  );
+
+  const controller =
+    new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 15000);
 
   try {
-    const controller = new AbortController();
+    const response = await fetch(
+      inputUrl,
+      {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal,
 
-    const timeout = setTimeout(() => {
-      controller.abort();
-    }, 15000);
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
 
-    const response = await fetch(inputUrl, {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
-        "Accept":
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
+          "Accept":
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 
-    clearTimeout(timeout);
+          "Accept-Language":
+            "en-US,en;q=0.9",
+        },
+      }
+    );
 
-    console.log("Resolved URL:", response.url);
+    console.log(
+      "Resolved URL:",
+      response.url
+    );
 
-    if (response.url && isValidHttpUrl(response.url)) {
+    if (
+      response.url &&
+      isValidHttpUrl(response.url)
+    ) {
       return response.url;
     }
 
@@ -244,11 +316,13 @@ async function resolveRedirectUrl(inputUrl) {
     );
 
     return inputUrl;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 // ======================================================
-// DOWNLOADER FUNCTIONS
+// DOWNLOADER SELECTION
 // ======================================================
 
 function getDownloader(platform) {
@@ -277,7 +351,7 @@ function getDownloader(platform) {
 }
 
 // ======================================================
-// MEDIA URL DETECTION
+// MEDIA URL HELPERS
 // ======================================================
 
 const MEDIA_EXTENSIONS = [
@@ -302,108 +376,212 @@ function looksLikeMediaUrl(value) {
     return false;
   }
 
-  const lower = value.toLowerCase();
+  const lower =
+    value.toLowerCase();
 
-  // Direct media extension
+  // Direct extension
   if (
-    MEDIA_EXTENSIONS.some((extension) =>
-      lower.includes(extension)
+    MEDIA_EXTENSIONS.some(
+      (extension) =>
+        lower.includes(extension)
     )
   ) {
     return true;
   }
 
-  // Common CDN/media URL patterns
-  const mediaPatterns = [
-    "video",
-    "videoplayback",
-    "media",
-    "download",
-    "stream",
-    "mp4",
-    "m3u8",
-    "mime=video",
-    "mime%3dvideo",
-    "mime%3Dvideo",
+  // Known CDN/download services
+  const knownMediaHosts = [
+    "rapidcdn.app",
+    "cdninstagram.com",
+    "fbcdn.net",
+    "fbsbx.com",
+    "tiktokcdn.com",
+    "tiktokv.com",
+    "pinimg.com",
+    "twimg.com",
+    "googlevideo.com",
+    "ytimg.com",
   ];
 
-  return mediaPatterns.some((pattern) =>
-    lower.includes(pattern)
+  try {
+    const hostname =
+      new URL(value)
+        .hostname
+        .toLowerCase();
+
+    if (
+      knownMediaHosts.some(
+        (host) =>
+          hostname === host ||
+          hostname.endsWith(`.${host}`)
+      )
+    ) {
+      return true;
+    }
+  } catch {}
+
+  const mediaPatterns = [
+    "videoplayback",
+    "video/",
+    "/video",
+    "media/",
+    "/media",
+    "download",
+    "stream",
+    "mime=video",
+    "mime%3dvideo",
+    "mime%3d%76%69%64%65%6f",
+  ];
+
+  return mediaPatterns.some(
+    (pattern) =>
+      lower.includes(pattern)
   );
 }
 
 // ======================================================
-// RECURSIVE RESPONSE PARSER
+// DIRECT MEDIA FIELD CHECK
 // ======================================================
 
-function collectMediaUrls(value, results = [], path = "") {
-  if (value === null || value === undefined) {
+const DIRECT_MEDIA_KEYS = [
+  "url",
+  "video_url",
+  "videoUrl",
+  "video",
+  "download",
+  "downloadUrl",
+  "download_url",
+  "media",
+  "mediaUrl",
+  "media_url",
+  "play",
+  "playUrl",
+  "play_url",
+  "hd",
+  "hdUrl",
+  "hd_url",
+  "sd",
+  "sdUrl",
+  "sd_url",
+  "nowm",
+  "nowmUrl",
+  "nowm_url",
+];
+
+function isDirectMediaKey(key) {
+  const normalized =
+    key
+      .toLowerCase()
+      .replace(/[-_]/g, "");
+
+  return DIRECT_MEDIA_KEYS.some(
+    (item) =>
+      item
+        .toLowerCase()
+        .replace(/[-_]/g, "") ===
+      normalized
+  );
+}
+
+// ======================================================
+// RECURSIVE MEDIA EXTRACTION
+// ======================================================
+
+function collectMediaUrls(
+  value,
+  results = [],
+  path = "",
+  trusted = false
+) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
     return results;
   }
 
+  // ----------------------------------------------------
   // String
+  // ----------------------------------------------------
+
   if (typeof value === "string") {
-    if (looksLikeMediaUrl(value)) {
+    if (
+      isValidHttpUrl(value) &&
+      (trusted ||
+        looksLikeMediaUrl(value))
+    ) {
       results.push({
         url: value,
         path,
+        trusted,
       });
     }
 
     return results;
   }
 
+  // ----------------------------------------------------
   // Array
+  // ----------------------------------------------------
+
   if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) {
+    for (
+      let i = 0;
+      i < value.length;
+      i++
+    ) {
       collectMediaUrls(
         value[i],
         results,
-        `${path}[${i}]`
+        `${path}[${i}]`,
+        trusted
       );
     }
 
     return results;
   }
 
+  // ----------------------------------------------------
   // Object
-  if (typeof value === "object") {
-    for (const [key, child] of Object.entries(value)) {
-      const childPath = path
-        ? `${path}.${key}`
-        : key;
+  // ----------------------------------------------------
 
-      // Prioritize media-looking keys
-      const keyLower = key.toLowerCase();
+  if (
+    typeof value === "object"
+  ) {
+    for (
+      const [key, child] of
+      Object.entries(value)
+    ) {
+      const childPath =
+        path
+          ? `${path}.${key}`
+          : key;
 
-      const isPriorityKey =
-        keyLower.includes("video") ||
-        keyLower.includes("media") ||
-        keyLower.includes("download") ||
-        keyLower.includes("stream") ||
-        keyLower.includes("play") ||
-        keyLower.includes("hd") ||
-        keyLower.includes("sd") ||
-        keyLower === "url" ||
-        keyLower === "link";
+      const priority =
+        isDirectMediaKey(key);
 
+      // Direct media fields are trusted.
       if (
-        isPriorityKey &&
+        priority &&
         typeof child === "string" &&
-        looksLikeMediaUrl(child)
+        isValidHttpUrl(child)
       ) {
         results.unshift({
           url: child,
           path: childPath,
-          priority: true,
+          trusted: true,
         });
-      } else {
-        collectMediaUrls(
-          child,
-          results,
-          childPath
-        );
+
+        continue;
       }
+
+      // Recursively inspect everything else.
+      collectMediaUrls(
+        child,
+        results,
+        childPath,
+        trusted
+      );
     }
   }
 
@@ -411,160 +589,288 @@ function collectMediaUrls(value, results = [], path = "") {
 }
 
 // ======================================================
-// NORMALIZE MEDIA
+// FIND PINTEREST VIDEO
 // ======================================================
 
-function normalizeMediaResponse(data, platform) {
+function findPinterestVideo(data) {
+  const candidates = [];
+
+  function walk(value) {
+    if (
+      value === null ||
+      value === undefined
+    ) {
+      return;
+    }
+
+    if (
+      typeof value === "string"
+    ) {
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        walk(item);
+      }
+
+      return;
+    }
+
+    if (
+      typeof value === "object"
+    ) {
+      for (
+        const [key, child] of
+        Object.entries(value)
+      ) {
+        const keyLower =
+          key.toLowerCase();
+
+        if (
+          (
+            keyLower.includes("video") ||
+            keyLower.includes("download") ||
+            keyLower === "url"
+          ) &&
+          typeof child === "string" &&
+          isValidHttpUrl(child)
+        ) {
+          candidates.push(child);
+        }
+
+        walk(child);
+      }
+    }
+  }
+
+  walk(data);
+
+  const unique =
+    [...new Set(candidates)];
+
+  return unique.find(
+    (url) =>
+      looksLikeMediaUrl(url) ||
+      url.includes(
+        "rapidcdn.app"
+      ) ||
+      url.includes(
+        "video"
+      )
+  ) || null;
+}
+
+// ======================================================
+// NORMALIZE RESPONSE
+// ======================================================
+
+function normalizeMediaResponse(
+  data,
+  platform
+) {
   const resolutions = {};
 
   // ----------------------------------------------------
-  // 1. Existing resolutions object
+  // Unwrap nested result wrappers
+  // ----------------------------------------------------
+
+  let payload = data;
+
+  for (
+    let i = 0;
+    i < 5;
+    i++
+  ) {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      payload.result &&
+      typeof payload.result === "object"
+    ) {
+      payload = payload.result;
+    } else {
+      break;
+    }
+  }
+
+  console.log(
+    "Normalized payload type:",
+    Array.isArray(payload)
+      ? "array"
+      : typeof payload
+  );
+
+  // ----------------------------------------------------
+  // Existing resolutions
   // ----------------------------------------------------
 
   if (
-    data &&
-    typeof data === "object" &&
-    data.resolutions &&
-    typeof data.resolutions === "object"
+    payload &&
+    typeof payload === "object" &&
+    payload.resolutions &&
+    typeof payload.resolutions === "object"
   ) {
-    for (const [quality, value] of Object.entries(
-      data.resolutions
-    )) {
+    for (
+      const [quality, value]
+      of Object.entries(
+        payload.resolutions
+      )
+    ) {
       if (
         typeof value === "string" &&
         isValidHttpUrl(value)
       ) {
-        resolutions[quality] = value;
+        resolutions[quality] =
+          value;
       }
     }
   }
 
   // ----------------------------------------------------
-  // 2. Known direct fields
+  // Recursive extraction
   // ----------------------------------------------------
 
-  const possibleFields = [
-    "url",
-    "download",
-    "downloadUrl",
-    "download_url",
-    "video",
-    "videoUrl",
-    "video_url",
-    "media",
-    "mediaUrl",
-    "media_url",
-    "hd",
-    "hdUrl",
-    "hd_url",
-    "sd",
-    "sdUrl",
-    "sd_url",
-    "nowm",
-    "nowmUrl",
-    "nowm_url",
-    "play",
-    "playUrl",
-    "play_url",
-    "play_url_hd",
-  ];
-
-  if (data && typeof data === "object") {
-    for (const field of possibleFields) {
-      const value = data[field];
-
-      if (
-        typeof value === "string" &&
-        isValidHttpUrl(value) &&
-        looksLikeMediaUrl(value)
-      ) {
-        if (
-          field.toLowerCase().includes("hd")
-        ) {
-          resolutions["1080p"] = value;
-        } else if (
-          field.toLowerCase().includes("sd")
-        ) {
-          resolutions["480p"] = value;
-        } else {
-          resolutions["auto"] = value;
-        }
-      }
-    }
-  }
+  const found =
+    collectMediaUrls(payload);
 
   // ----------------------------------------------------
-  // 3. Recursive fallback
+  // Add URLs
   // ----------------------------------------------------
-
-  const found = collectMediaUrls(data);
-
-  // Remove duplicates
-  const uniqueUrls = [];
 
   for (const item of found) {
+    const url = item.url;
+
     if (
-      !uniqueUrls.includes(item.url)
+      !url ||
+      Object.values(
+        resolutions
+      ).includes(url)
     ) {
-      uniqueUrls.push(item.url);
+      continue;
     }
-  }
 
-  // ----------------------------------------------------
-  // 4. Add recursive results
-  // ----------------------------------------------------
+    const lower =
+      url.toLowerCase();
 
-  for (const url of uniqueUrls) {
+    // HD
     if (
-      !Object.values(resolutions).includes(url)
+      lower.includes("2160") ||
+      lower.includes("1440") ||
+      lower.includes("1080") ||
+      lower.includes("hd")
     ) {
-      const lower = url.toLowerCase();
-
       if (
-        lower.includes("1080") ||
-        lower.includes("2160") ||
-        lower.includes("hd")
+        !resolutions["1080p"]
       ) {
-        resolutions["1080p"] = url;
-      } else if (
-        lower.includes("720")
-      ) {
-        resolutions["720p"] = url;
-      } else if (
-        lower.includes("480")
-      ) {
-        resolutions["480p"] = url;
-      } else if (
-        lower.includes("360")
-      ) {
-        resolutions["360p"] = url;
-      } else if (
-        !resolutions["auto"]
-      ) {
-        resolutions["auto"] = url;
+        resolutions["1080p"] =
+          url;
       }
+
+      continue;
+    }
+
+    // 720
+    if (
+      lower.includes("720")
+    ) {
+      if (
+        !resolutions["720p"]
+      ) {
+        resolutions["720p"] =
+          url;
+      }
+
+      continue;
+    }
+
+    // 480
+    if (
+      lower.includes("480")
+    ) {
+      if (
+        !resolutions["480p"]
+      ) {
+        resolutions["480p"] =
+          url;
+      }
+
+      continue;
+    }
+
+    // 360
+    if (
+      lower.includes("360")
+    ) {
+      if (
+        !resolutions["360p"]
+      ) {
+        resolutions["360p"] =
+          url;
+      }
+
+      continue;
+    }
+
+    // Generic
+    if (
+      !resolutions["auto"]
+    ) {
+      resolutions["auto"] =
+        url;
     }
   }
 
   // ----------------------------------------------------
-  // 5. Remove duplicate URLs
+  // Pinterest-specific handling
   // ----------------------------------------------------
 
-  const finalResolutions = {};
+  if (
+    platform === "pinterest"
+  ) {
+    const pinterestVideo =
+      findPinterestVideo(
+        payload
+      );
 
-  for (const [quality, url] of Object.entries(
-    resolutions
-  )) {
+    if (
+      pinterestVideo &&
+      !Object.values(
+        resolutions
+      ).includes(
+        pinterestVideo
+      )
+    ) {
+      resolutions["auto"] =
+        pinterestVideo;
+    }
+  }
+
+  // ----------------------------------------------------
+  // Remove duplicates
+  // ----------------------------------------------------
+
+  const unique = {};
+
+  for (
+    const [quality, url]
+    of Object.entries(
+      resolutions
+    )
+  ) {
     if (
       url &&
-      !Object.values(finalResolutions).includes(url)
+      !Object.values(
+        unique
+      ).includes(url)
     ) {
-      finalResolutions[quality] = url;
+      unique[quality] =
+        url;
     }
   }
 
   // ----------------------------------------------------
-  // 6. Sort quality
+  // Sort
   // ----------------------------------------------------
 
   const qualityOrder = [
@@ -580,306 +886,478 @@ function normalizeMediaResponse(data, platform) {
 
   const sorted = {};
 
-  for (const quality of qualityOrder) {
-    if (finalResolutions[quality]) {
+  for (
+    const quality
+    of qualityOrder
+  ) {
+    if (
+      unique[quality]
+    ) {
       sorted[quality] =
-        finalResolutions[quality];
+        unique[quality];
     }
   }
 
-  // Add anything not in the standard list
-  for (const [quality, url] of Object.entries(
-    finalResolutions
-  )) {
-    if (!sorted[quality]) {
-      sorted[quality] = url;
+  for (
+    const [quality, url]
+    of Object.entries(unique)
+  ) {
+    if (
+      !sorted[quality]
+    ) {
+      sorted[quality] =
+        url;
     }
   }
 
   return {
-    success: Object.keys(sorted).length > 0,
+    success:
+      Object.keys(sorted)
+        .length > 0,
+
     platform,
-    resolutions: sorted,
+
+    resolutions:
+      sorted,
   };
+}
+
+// ======================================================
+// PINTEREST IMAGE-ONLY DETECTION
+// ======================================================
+
+function isPinterestImageOnly(
+  data
+) {
+  let payload = data;
+
+  for (
+    let i = 0;
+    i < 5;
+    i++
+  ) {
+    if (
+      payload &&
+      typeof payload === "object" &&
+      payload.result &&
+      typeof payload.result === "object"
+    ) {
+      payload = payload.result;
+    } else {
+      break;
+    }
+  }
+
+  if (
+    Array.isArray(payload)
+  ) {
+    payload =
+      payload[0];
+  }
+
+  if (
+    !payload ||
+    typeof payload !== "object"
+  ) {
+    return false;
+  }
+
+  const videoUrl =
+    payload.video_url ??
+    payload.videoUrl;
+
+  const videos =
+    payload.videos;
+
+  const hasVideoUrl =
+    typeof videoUrl === "string" &&
+    videoUrl.trim().length > 0;
+
+  const hasVideos =
+    videos &&
+    typeof videos === "object" &&
+    Object.keys(videos).length > 0;
+
+  const hasImage =
+    typeof payload.image ===
+      "string" ||
+    (
+      payload.images &&
+      typeof payload.images ===
+        "object"
+    );
+
+  return (
+    !hasVideoUrl &&
+    !hasVideos &&
+    hasImage
+  );
 }
 
 // ======================================================
 // EXTRACT API
 // ======================================================
 
-app.post("/api/extract", async (req, res) => {
-  const startedAt = Date.now();
-
-  try {
-    const originalUrl =
-      typeof req.body?.url === "string"
-        ? req.body.url.trim()
-        : "";
-
-    // --------------------------------------------------
-    // Validate
-    // --------------------------------------------------
-
-    if (!originalUrl) {
-      return res.status(400).json({
-        success: false,
-        error: "URL is required.",
-      });
-    }
-
-    if (!isValidHttpUrl(originalUrl)) {
-      return res.status(400).json({
-        success: false,
-        error: "Please provide a valid HTTP/HTTPS URL.",
-      });
-    }
-
-    console.log("\n========================================");
-    console.log("NEW EXTRACTION REQUEST");
-    console.log("URL:", originalUrl);
-    console.log("========================================");
-
-    // --------------------------------------------------
-    // Detect original platform
-    // --------------------------------------------------
-
-    let platform = detectPlatform(originalUrl);
-
-    if (!platform) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "Unsupported platform. Supported platforms are Instagram, TikTok, Facebook, X/Twitter, YouTube and Pinterest.",
-      });
-    }
-
-    console.log(
-      "Detected platform:",
-      platform
-    );
-
-    // --------------------------------------------------
-    // Clean URL
-    // --------------------------------------------------
-
-    let workingUrl = cleanUrl(originalUrl);
-
-    console.log(
-      "Clean URL:",
-      workingUrl
-    );
-
-    // --------------------------------------------------
-    // Resolve short/share URL
-    // --------------------------------------------------
+app.post(
+  "/api/extract",
+  async (req, res) => {
+    const startedAt =
+      Date.now();
 
     try {
-      const resolved =
-        await resolveRedirectUrl(
-          workingUrl
-        );
+      // ------------------------------------------------
+      // Read URL
+      // ------------------------------------------------
+
+      const originalUrl =
+        typeof req.body?.url ===
+          "string"
+          ? req.body.url.trim()
+          : "";
+
+      // ------------------------------------------------
+      // Validate
+      // ------------------------------------------------
+
+      if (!originalUrl) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "URL is required.",
+        });
+      }
 
       if (
-        resolved &&
-        resolved !== workingUrl
+        !isValidHttpUrl(
+          originalUrl
+        )
       ) {
-        workingUrl = resolved;
-
-        // Re-detect after redirect
-        const detectedAfterRedirect =
-          detectPlatform(workingUrl);
-
-        if (detectedAfterRedirect) {
-          platform =
-            detectedAfterRedirect;
-        }
-
-        console.log(
-          "Platform after redirect:",
-          platform
-        );
+        return res.status(400).json({
+          success: false,
+          error:
+            "Please provide a valid HTTP/HTTPS URL.",
+        });
       }
-    } catch (error) {
+
       console.log(
-        "Redirect resolver skipped:",
-        error.message
-      );
-    }
-
-    // --------------------------------------------------
-    // Get downloader
-    // --------------------------------------------------
-
-    const downloader =
-      getDownloader(platform);
-
-    if (!downloader) {
-      return res.status(400).json({
-        success: false,
-        error:
-          "Downloader is not available for this platform.",
-      });
-    }
-
-    console.log(
-      `Calling ${platform} downloader...`
-    );
-
-    // --------------------------------------------------
-    // Call downloader
-    // --------------------------------------------------
-
-    let result;
-
-    try {
-      result =
-        await downloader(workingUrl);
-    } catch (error) {
-      console.error(
-        `${platform} downloader error:`,
-        error
+        "\n========================================"
       );
 
-      return res.status(502).json({
-        success: false,
-        platform,
-        error:
-          "The media extractor could not process this URL.",
-        details:
-          error?.message ||
-          "Unknown extractor error.",
-      });
-    }
-
-    // --------------------------------------------------
-    // Debug response
-    // --------------------------------------------------
-
-    console.log(
-      `${platform} raw response type:`,
-      typeof result
-    );
-
-    if (result && typeof result === "object") {
       console.log(
-        `${platform} response keys:`,
-        Object.keys(result)
+        "NEW EXTRACTION REQUEST"
       );
-    }
 
-    // --------------------------------------------------
-    // Normalize
-    // --------------------------------------------------
+      console.log(
+        "URL:",
+        originalUrl
+      );
 
-    const normalized =
-      normalizeMediaResponse(
-        result,
+      console.log(
+        "========================================"
+      );
+
+      // ------------------------------------------------
+      // Detect platform
+      // ------------------------------------------------
+
+      let platform =
+        detectPlatform(
+          originalUrl
+        );
+
+      if (!platform) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Unsupported platform. Supported platforms are Instagram, TikTok, Facebook, X/Twitter, YouTube and Pinterest.",
+        });
+      }
+
+      console.log(
+        "Detected platform:",
         platform
       );
 
-    // --------------------------------------------------
-    // Nothing found
-    // --------------------------------------------------
+      // ------------------------------------------------
+      // Clean URL
+      // ------------------------------------------------
 
-    if (
-      !normalized.success ||
-      Object.keys(
-        normalized.resolutions
-      ).length === 0
-    ) {
-      console.error(
-        "NO MEDIA URL FOUND"
+      let workingUrl =
+        cleanUrl(
+          originalUrl
+        );
+
+      console.log(
+        "Clean URL:",
+        workingUrl
       );
 
-      console.error(
-        "Raw downloader response:",
-        JSON.stringify(
+      // ------------------------------------------------
+      // Resolve short URLs
+      // ------------------------------------------------
+
+      try {
+        const resolved =
+          await resolveRedirectUrl(
+            workingUrl
+          );
+
+        if (
+          resolved &&
+          resolved !== workingUrl
+        ) {
+          workingUrl =
+            resolved;
+
+          const detectedAfterRedirect =
+            detectPlatform(
+              workingUrl
+            );
+
+          if (
+            detectedAfterRedirect
+          ) {
+            platform =
+              detectedAfterRedirect;
+          }
+
+          console.log(
+            "Platform after redirect:",
+            platform
+          );
+        }
+      } catch (error) {
+        console.log(
+          "Redirect resolution skipped:",
+          error.message
+        );
+      }
+
+      // ------------------------------------------------
+      // Downloader
+      // ------------------------------------------------
+
+      const downloader =
+        getDownloader(
+          platform
+        );
+
+      if (!downloader) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Downloader is not available for this platform.",
+        });
+      }
+
+      console.log(
+        `Calling ${platform} downloader...`
+      );
+
+      // ------------------------------------------------
+      // Execute downloader
+      // ------------------------------------------------
+
+      let result;
+
+      try {
+        result =
+          await downloader(
+            workingUrl
+          );
+      } catch (error) {
+        console.error(
+          `${platform} downloader error:`,
+          error
+        );
+
+        return res.status(502).json({
+          success: false,
+          platform,
+          error:
+            "The media extractor could not process this URL.",
+          details:
+            error?.message ||
+            "Unknown extractor error.",
+        });
+      }
+
+      // ------------------------------------------------
+      // Debug
+      // ------------------------------------------------
+
+      console.log(
+        `${platform} raw response type:`,
+        typeof result
+      );
+
+      if (
+        result &&
+        typeof result === "object"
+      ) {
+        console.log(
+          `${platform} response keys:`,
+          Object.keys(result)
+        );
+      }
+
+      // ------------------------------------------------
+      // Pinterest image-only
+      // ------------------------------------------------
+
+      if (
+        platform ===
+          "pinterest" &&
+        isPinterestImageOnly(
+          result
+        )
+      ) {
+        console.log(
+          "Pinterest result is IMAGE ONLY."
+        );
+
+        return res.status(422).json({
+          success: false,
+          platform,
+          error:
+            "This Pinterest Pin contains an image, not a video.",
+          mediaType:
+            "image",
+        });
+      }
+
+      // ------------------------------------------------
+      // Normalize
+      // ------------------------------------------------
+
+      const normalized =
+        normalizeMediaResponse(
           result,
-          null,
-          2
-        ).slice(0, 10000)
+          platform
+        );
+
+      // ------------------------------------------------
+      // No media
+      // ------------------------------------------------
+
+      if (
+        !normalized.success ||
+        Object.keys(
+          normalized.resolutions
+        ).length === 0
+      ) {
+        console.error(
+          "NO MEDIA URL FOUND"
+        );
+
+        console.error(
+          "Raw downloader response:",
+          JSON.stringify(
+            result,
+            null,
+            2
+          ).slice(
+            0,
+            10000
+          )
+        );
+
+        return res.status(422).json({
+          success: false,
+          platform,
+          error:
+            "No downloadable video URL was found for this post.",
+          hint:
+            "Make sure the post/video is public and contains a supported video.",
+        });
+      }
+
+      // ------------------------------------------------
+      // Success
+      // ------------------------------------------------
+
+      console.log(
+        "Found resolutions:",
+        Object.keys(
+          normalized.resolutions
+        )
       );
 
-      return res.status(422).json({
-        success: false,
+      console.log(
+        "Extraction time:",
+        `${Date.now() - startedAt}ms`
+      );
+
+      console.log(
+        "========================================\n"
+      );
+
+      return res.json({
+        success: true,
         platform,
+        sourceUrl:
+          originalUrl,
+        resolvedUrl:
+          workingUrl,
+        resolutions:
+          normalized.resolutions,
+      });
+    } catch (error) {
+      console.error(
+        "UNEXPECTED SERVER ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
         error:
-          "No downloadable media URL was found for this post.",
-        hint:
-          "Make sure the post/video is public and accessible.",
+          "Internal server error.",
+        details:
+          error?.message ||
+          "Unknown error.",
       });
     }
-
-    // --------------------------------------------------
-    // Success
-    // --------------------------------------------------
-
-    console.log(
-      "Found resolutions:",
-      Object.keys(
-        normalized.resolutions
-      )
-    );
-
-    console.log(
-      "Extraction time:",
-      `${Date.now() - startedAt}ms`
-    );
-
-    console.log(
-      "========================================\n"
-    );
-
-    return res.json({
-      success: true,
-      platform,
-      sourceUrl: originalUrl,
-      resolvedUrl: workingUrl,
-      resolutions:
-        normalized.resolutions,
-    });
-  } catch (error) {
-    console.error(
-      "UNEXPECTED SERVER ERROR:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      error:
-        "Internal server error.",
-      details:
-        error?.message ||
-        "Unknown error.",
-    });
   }
-});
+);
 
 // ======================================================
 // 404
 // ======================================================
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "Endpoint not found.",
-  });
-});
+app.use(
+  (req, res) => {
+    res.status(404).json({
+      success: false,
+      error:
+        "Endpoint not found.",
+    });
+  }
+);
 
 // ======================================================
 // GLOBAL ERROR HANDLER
 // ======================================================
 
 app.use(
-  (error, req, res, next) => {
+  (
+    error,
+    req,
+    res,
+    next
+  ) => {
     console.error(
       "GLOBAL ERROR:",
       error
     );
 
+    if (res.headersSent) {
+      return next(error);
+    }
+
     res.status(500).json({
       success: false,
-      error: "Internal server error.",
+      error:
+        "Internal server error.",
     });
   }
 );
@@ -888,11 +1366,15 @@ app.use(
 // START SERVER
 // ======================================================
 
-app.listen(PORT, () => {
-  console.log(
-    `StreamBox Backend running on port ${PORT}`
-  );
-  console.log(
-    `Node version: ${process.version}`
-  );
-});
+app.listen(
+  PORT,
+  () => {
+    console.log(
+      `StreamBox Backend running on port ${PORT}`
+    );
+
+    console.log(
+      `Node version: ${process.version}`
+    );
+  }
+);
