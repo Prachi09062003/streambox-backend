@@ -857,71 +857,50 @@ app.get("/api/health", (req, res) => {
 // TOOLS
 // ======================================================
 
-app.get("/api/tools", async (req, res) => {
-  let ytDlp = null;
+app.get('/api/tools', async (req, res) => {
+  const tools = {
+    ytDlp: {
+      path: YTDLP_PATH,
+      installed: false,
+      version: null,
+      error: null,
+    },
+    ffmpeg: {
+      path: FFMPEG_PATH,
+      installed: false,
+      version: null,
+      error: null,
+    },
+  };
 
   try {
-    const runner = await getYtDlpRunner();
+    const result = await runCommand(YTDLP_PATH, ['--version'], {
+      timeout: 15000,
+    });
 
-    const result = await runCommand(
-      runner.command,
-      [...runner.args, "--version"],
-      15000
-    );
-
-    ytDlp = {
-      installed: true,
-      command: runner.command,
-      arguments: runner.args,
-      version: result.stdout.trim(),
-    };
+    tools.ytDlp.installed = true;
+    tools.ytDlp.version = result.stdout.trim();
   } catch (error) {
-    ytDlp = {
-      installed: false,
-      command: null,
-      arguments: [],
-      version: null,
-      error: error.message,
-    };
+    tools.ytDlp.error = error.message;
   }
 
-  let ffmpeg = null;
-
   try {
-    const result = await runCommand(
-      getFfmpegCommand(),
-      ["-version"],
-      15000
-    );
+    const result = await runCommand(FFMPEG_PATH, ['-version'], {
+      timeout: 15000,
+    });
 
-    ffmpeg = {
-      installed: true,
-      command: getFfmpegCommand(),
-      version:
-        result.stdout
-          .trim()
-          .split("\n")[0] || null,
-    };
+    tools.ffmpeg.installed = true;
+    tools.ffmpeg.version =
+      result.stdout.split('\n')[0].trim();
   } catch (error) {
-    ffmpeg = {
-      installed: false,
-      command: getFfmpegCommand(),
-      version: null,
-      error: error.message,
-    };
+    tools.ffmpeg.error = error.message;
   }
 
   res.json({
-    success: true,
-    node: process.version,
-    platform: process.platform,
-    architecture: process.arch,
-    ytDlp,
-    ffmpeg,
-    environment: {
-      YTDLP_PATH: EXPLICIT_YTDLP_PATH || null,
-      FFMPEG_PATH: EXPLICIT_FFMPEG_PATH || null,
-    },
+    success:
+      tools.ytDlp.installed &&
+      tools.ffmpeg.installed,
+    tools,
   });
 });
 
