@@ -1,30 +1,39 @@
 FROM node:22-bookworm
 
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
     ffmpeg \
-    ca-certificates \
+    ffprobe \
     curl \
+    ca-certificates \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install \
-    --break-system-packages \
-    --no-cache-dir \
-    -U "yt-dlp[default]"
+# Install the official yt-dlp Linux executable
+RUN curl -L \
+    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
+    -o /usr/local/bin/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp
 
-RUN command -v yt-dlp && \
+# Verify tools during Docker build
+RUN echo "yt-dlp location:" && \
+    command -v yt-dlp && \
     yt-dlp --version && \
+    echo "ffmpeg location:" && \
     command -v ffmpeg && \
-    ffmpeg -version | head -n 1
+    ffmpeg -version | head -n 1 && \
+    echo "ffprobe location:" && \
+    command -v ffprobe && \
+    ffprobe -version | head -n 1
 
 WORKDIR /app
 
+# Install Node dependencies
 COPY package*.json ./
-
 RUN npm install --omit=dev
 
+# Copy backend source
 COPY . .
 
 ENV NODE_ENV=production
