@@ -20,6 +20,7 @@ const PORT = process.env.PORT || 3000;
 
 const EXTRACTION_TIMEOUT = 90 * 1000;
 const YTDLP_TIMEOUT = 120 * 1000;
+const REDIRECT_TIMEOUT = 15 * 1000;
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -84,6 +85,7 @@ function normalizeUrl(url) {
       parsed.searchParams.delete(param);
     }
 
+    // X -> Twitter
     if (
       parsed.hostname === "x.com" ||
       parsed.hostname === "www.x.com"
@@ -91,10 +93,13 @@ function normalizeUrl(url) {
       parsed.hostname = "twitter.com";
     }
 
-    if (parsed.hostname === "mobile.twitter.com") {
+    if (
+      parsed.hostname === "mobile.twitter.com"
+    ) {
       parsed.hostname = "twitter.com";
     }
 
+    // Facebook mobile domains
     if (
       parsed.hostname === "m.facebook.com" ||
       parsed.hostname === "mbasic.facebook.com"
@@ -168,14 +173,16 @@ function getPlatform(url) {
 async function resolveRedirectUrl(inputUrl) {
   let currentUrl = inputUrl;
 
-  console.log(`[RESOLVE] Starting URL: ${currentUrl}`);
+  console.log(
+    `[RESOLVE] Starting URL: ${currentUrl}`
+  );
 
   for (let attempt = 0; attempt < 5; attempt++) {
     const controller = new AbortController();
 
     const timer = setTimeout(() => {
       controller.abort();
-    }, 15000);
+    }, REDIRECT_TIMEOUT);
 
     try {
       const response = await fetch(currentUrl, {
@@ -196,7 +203,8 @@ async function resolveRedirectUrl(inputUrl) {
         response.status >= 300 &&
         response.status < 400
       ) {
-        const location = response.headers.get("location");
+        const location =
+          response.headers.get("location");
 
         if (!location) {
           break;
@@ -208,7 +216,7 @@ async function resolveRedirectUrl(inputUrl) {
         ).href;
 
         console.log(
-          `[RESOLVE] Redirect ${attempt + 1}: ${currentUrl}`
+          `[RESOLVE] Redirect ${attempt + 1}`
         );
 
         continue;
@@ -226,7 +234,7 @@ async function resolveRedirectUrl(inputUrl) {
       clearTimeout(timer);
 
       console.log(
-        `[RESOLVE] Attempt ${attempt + 1} failed: ${error.message}`
+        `[RESOLVE] Failed: ${error.message}`
       );
 
       break;
@@ -243,10 +251,16 @@ async function resolveRedirectUrl(inputUrl) {
 async function prepareUrl(platform, inputUrl) {
   let url = normalizeUrl(inputUrl);
 
+  // ----------------------------------------------------
+  // Pinterest
+  // ----------------------------------------------------
+
   if (
     platform === "pinterest" &&
-    (url.includes("pin.it") ||
-      url.includes("pinterest.com"))
+    (
+      url.includes("pin.it") ||
+      url.includes("pinterest.com")
+    )
   ) {
     console.log(
       "[PREPARE] Resolving Pinterest URL"
@@ -260,14 +274,20 @@ async function prepareUrl(platform, inputUrl) {
     }
 
     console.log(
-      `[PREPARE] Pinterest URL: ${url}`
+      `[PREPARE] Pinterest prepared`
     );
   }
 
+  // ----------------------------------------------------
+  // Facebook
+  // ----------------------------------------------------
+
   if (
     platform === "facebook" &&
-    (url.includes("/share/") ||
-      url.includes("fb.watch"))
+    (
+      url.includes("/share/") ||
+      url.includes("fb.watch")
+    )
   ) {
     console.log(
       "[PREPARE] Resolving Facebook share URL"
@@ -281,40 +301,56 @@ async function prepareUrl(platform, inputUrl) {
     }
 
     console.log(
-      `[PREPARE] Facebook URL: ${url}`
+      `[PREPARE] Facebook prepared`
     );
   }
+
+  // ----------------------------------------------------
+  // YouTube
+  // ----------------------------------------------------
 
   if (platform === "youtube") {
     try {
       const parsed = new URL(url);
 
-      if (parsed.hostname === "youtu.be") {
-        const videoId = parsed.pathname
-          .split("/")
-          .filter(Boolean)[0];
+      // youtu.be/VIDEO_ID
+      if (
+        parsed.hostname === "youtu.be"
+      ) {
+        const videoId =
+          parsed.pathname
+            .split("/")
+            .filter(Boolean)[0];
 
         if (videoId) {
           url =
             `https://www.youtube.com/watch?v=${videoId}`;
         }
-      } else if (
+      }
+
+      // youtube.com/shorts/VIDEO_ID
+      else if (
         parsed.pathname.startsWith("/shorts/")
       ) {
-        const videoId = parsed.pathname
-          .split("/")
-          .filter(Boolean)[1];
+        const videoId =
+          parsed.pathname
+            .split("/")
+            .filter(Boolean)[1];
 
         if (videoId) {
           url =
             `https://www.youtube.com/watch?v=${videoId}`;
         }
-      } else if (
+      }
+
+      // youtube.com/embed/VIDEO_ID
+      else if (
         parsed.pathname.startsWith("/embed/")
       ) {
-        const videoId = parsed.pathname
-          .split("/")
-          .filter(Boolean)[1];
+        const videoId =
+          parsed.pathname
+            .split("/")
+            .filter(Boolean)[1];
 
         if (videoId) {
           url =
@@ -323,10 +359,10 @@ async function prepareUrl(platform, inputUrl) {
       }
 
       console.log(
-        `[PREPARE] YouTube URL: ${url}`
+        `[PREPARE] YouTube URL prepared`
       );
     } catch {
-      // Keep original URL.
+      // Keep original URL
     }
   }
 
@@ -334,7 +370,7 @@ async function prepareUrl(platform, inputUrl) {
 }
 
 // ======================================================
-// MEDIA URL HELPERS
+// MEDIA URL VALIDATION
 // ======================================================
 
 function isLikelyMediaUrl(url) {
@@ -354,14 +390,14 @@ function isLikelyMediaUrl(url) {
     lower.includes("video") ||
     lower.includes("media") ||
     lower.includes("download") ||
-    lower.includes("rapidcdn") ||
     lower.includes("cdn") ||
     lower.includes("stream")
   );
 }
 
 function isKnownMediaKey(key) {
-  const normalized = key.toLowerCase();
+  const normalized =
+    key.toLowerCase();
 
   const exactKeys = [
     "url",
@@ -384,7 +420,9 @@ function isKnownMediaKey(key) {
     "fileurl",
   ];
 
-  return exactKeys.includes(normalized);
+  return exactKeys.includes(
+    normalized
+  );
 }
 
 function scoreMediaUrl(url) {
@@ -392,22 +430,50 @@ function scoreMediaUrl(url) {
     return -1;
   }
 
-  const lower = url.toLowerCase();
+  const lower =
+    url.toLowerCase();
 
   let score = 0;
 
-  if (lower.includes(".mp4")) score += 100;
-  if (lower.includes(".m4v")) score += 90;
-  if (lower.includes(".mov")) score += 80;
-  if (lower.includes(".webm")) score += 70;
-  if (lower.includes(".m3u8")) score += 50;
-  if (lower.includes(".mpd")) score += 40;
+  if (lower.includes(".mp4")) {
+    score += 100;
+  }
 
-  if (lower.includes("video")) score += 25;
-  if (lower.includes("download")) score += 20;
-  if (lower.includes("media")) score += 15;
-  if (lower.includes("rapidcdn")) score += 15;
-  if (lower.includes("cdn")) score += 10;
+  if (lower.includes(".m4v")) {
+    score += 90;
+  }
+
+  if (lower.includes(".mov")) {
+    score += 80;
+  }
+
+  if (lower.includes(".webm")) {
+    score += 70;
+  }
+
+  if (lower.includes(".m3u8")) {
+    score += 50;
+  }
+
+  if (lower.includes(".mpd")) {
+    score += 40;
+  }
+
+  if (lower.includes("video")) {
+    score += 25;
+  }
+
+  if (lower.includes("download")) {
+    score += 20;
+  }
+
+  if (lower.includes("media")) {
+    score += 15;
+  }
+
+  if (lower.includes("cdn")) {
+    score += 10;
+  }
 
   return score;
 }
@@ -429,6 +495,7 @@ function extractAllMediaUrls(
     return found;
   }
 
+  // String
   if (typeof value === "string") {
     if (
       isValidHttpUrl(value) &&
@@ -441,6 +508,7 @@ function extractAllMediaUrls(
     return found;
   }
 
+  // Array
   if (Array.isArray(value)) {
     for (const item of value) {
       extractAllMediaUrls(
@@ -453,8 +521,12 @@ function extractAllMediaUrls(
     return found;
   }
 
+  // Object
   if (typeof value === "object") {
-    for (const [key, item] of Object.entries(value)) {
+    for (
+      const [key, item]
+      of Object.entries(value)
+    ) {
       const knownMediaKey =
         isKnownMediaKey(key);
 
@@ -508,6 +580,75 @@ function extractBestMediaUrl(result) {
 }
 
 // ======================================================
+// FIND URL BY KEY
+// ======================================================
+
+function findFirstUrlByKeys(
+  value,
+  keys,
+  depth = 0
+) {
+  if (
+    value === null ||
+    value === undefined ||
+    depth > 15
+  ) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found =
+        findFirstUrlByKeys(
+          item,
+          keys,
+          depth + 1
+        );
+
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  if (
+    typeof value !== "object"
+  ) {
+    return null;
+  }
+
+  for (
+    const [key, item]
+    of Object.entries(value)
+  ) {
+    if (
+      keys.includes(
+        key.toLowerCase()
+      ) &&
+      typeof item === "string" &&
+      isValidHttpUrl(item)
+    ) {
+      return item;
+    }
+
+    const nested =
+      findFirstUrlByKeys(
+        item,
+        keys,
+        depth + 1
+      );
+
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+// ======================================================
 // SAFE DEBUGGING
 // ======================================================
 
@@ -556,9 +697,10 @@ function summarizeObject(
 
   const output = {};
 
-  for (const [key, item] of Object.entries(
-    value
-  )) {
+  for (
+    const [key, item]
+    of Object.entries(value)
+  ) {
     if (
       typeof item === "string" &&
       isValidHttpUrl(item)
@@ -593,7 +735,7 @@ function makeSafeDebug(result) {
 }
 
 // ======================================================
-// TIMEOUT WRAPPER
+// TIMEOUT
 // ======================================================
 
 async function withTimeout(
@@ -628,7 +770,7 @@ async function withTimeout(
 }
 
 // ======================================================
-// BTCH-DOWNLOADER EXTRACTOR
+// BTCH EXTRACTOR
 // ======================================================
 
 async function runBtchExtractor(
@@ -640,30 +782,35 @@ async function runBtchExtractor(
       console.log(
         "[EXTRACTOR] Instagram -> igdl()"
       );
+
       return await igdl(url);
 
     case "tiktok":
       console.log(
         "[EXTRACTOR] TikTok -> ttdl()"
       );
+
       return await ttdl(url);
 
     case "facebook":
       console.log(
         "[EXTRACTOR] Facebook -> fbdown()"
       );
+
       return await fbdown(url);
 
     case "pinterest":
       console.log(
         "[EXTRACTOR] Pinterest -> pinterest()"
       );
+
       return await pinterest(url);
 
     case "twitter":
       console.log(
         "[EXTRACTOR] Twitter/X -> twitter()"
       );
+
       return await twitter(url);
 
     default:
@@ -674,7 +821,7 @@ async function runBtchExtractor(
 }
 
 // ======================================================
-// YT-DLP HELPERS
+// YT-DLP / FFMPEG COMMANDS
 // ======================================================
 
 function getYtDlpCommand() {
@@ -702,38 +849,46 @@ function runCommand(
 ) {
   return new Promise(
     (resolve, reject) => {
-      const child = spawn(
-        command,
-        args,
-        {
-          shell: false,
-          windowsHide: true,
-        }
-      );
-
       let stdout = "";
       let stderr = "";
       let finished = false;
 
-      const timer = setTimeout(() => {
-        if (finished) {
-          return;
-        }
+      let child;
 
-        finished = true;
-
-        try {
-          child.kill("SIGKILL");
-        } catch {}
-
-        reject(
-          new Error(
-            `${command} timed out after ${Math.round(
-              timeoutMs / 1000
-            )} seconds`
-          )
+      try {
+        child = spawn(
+          command,
+          args,
+          {
+            shell: false,
+            windowsHide: true,
+          }
         );
-      }, timeoutMs);
+      } catch (error) {
+        reject(error);
+        return;
+      }
+
+      const timer =
+        setTimeout(() => {
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+
+          reject(
+            new Error(
+              `${command} timed out after ${Math.round(
+                timeoutMs / 1000
+              )} seconds`
+            )
+          );
+        }, timeoutMs);
 
       child.stdout.on(
         "data",
@@ -829,6 +984,130 @@ async function checkCommand(
 }
 
 // ======================================================
+// YOUTUBE FORMAT SELECTION
+// ======================================================
+
+function selectYouTubeFormat(
+  metadata
+) {
+  if (
+    !metadata ||
+    !Array.isArray(
+      metadata.formats
+    )
+  ) {
+    return null;
+  }
+
+  const formats =
+    metadata.formats.filter(
+      (format) => {
+        if (
+          !format ||
+          typeof format.url !==
+            "string" ||
+          !isValidHttpUrl(
+            format.url
+          )
+        ) {
+          return false;
+        }
+
+        if (
+          !format.vcodec ||
+          format.vcodec === "none"
+        ) {
+          return false;
+        }
+
+        if (
+          format.height &&
+          Number(format.height) > 1080
+        ) {
+          return false;
+        }
+
+        return true;
+      }
+    );
+
+  if (formats.length === 0) {
+    return null;
+  }
+
+  // ----------------------------------------------------
+  // FIRST PRIORITY:
+  // Combined video + audio
+  // ----------------------------------------------------
+
+  const combined =
+    formats.filter(
+      (format) =>
+        format.acodec &&
+        format.acodec !== "none"
+    );
+
+  if (combined.length > 0) {
+    combined.sort(
+      (a, b) => {
+        const heightDifference =
+          Number(b.height || 0) -
+          Number(a.height || 0);
+
+        if (
+          heightDifference !== 0
+        ) {
+          return heightDifference;
+        }
+
+        const fpsDifference =
+          Number(b.fps || 0) -
+          Number(a.fps || 0);
+
+        if (
+          fpsDifference !== 0
+        ) {
+          return fpsDifference;
+        }
+
+        return (
+          Number(b.tbr || 0) -
+          Number(a.tbr || 0)
+        );
+      }
+    );
+
+    return combined[0];
+  }
+
+  // ----------------------------------------------------
+  // SECOND PRIORITY:
+  // Any video stream
+  // ----------------------------------------------------
+
+  formats.sort(
+    (a, b) => {
+      const heightDifference =
+        Number(b.height || 0) -
+        Number(a.height || 0);
+
+      if (
+        heightDifference !== 0
+      ) {
+        return heightDifference;
+      }
+
+      return (
+        Number(b.tbr || 0) -
+        Number(a.tbr || 0)
+      );
+    }
+  );
+
+  return formats[0];
+}
+
+// ======================================================
 // YOUTUBE / YT-DLP EXTRACTION
 // ======================================================
 
@@ -836,7 +1115,7 @@ async function extractYouTubeWithYtDlp(
   url
 ) {
   console.log(
-    "[YTDLP] Extracting YouTube URL"
+    "[YTDLP] Starting YouTube extraction"
   );
 
   const args = [
@@ -846,11 +1125,9 @@ async function extractYouTubeWithYtDlp(
     "--no-warnings",
     "--ignore-config",
 
+    // Prefer a combined stream.
     "--format",
-    "bv*[height<=1080]+ba/b[height<=1080]/b",
-
-    "--merge-output-format",
-    "mp4",
+    "b[height<=1080]/b[height<=720]/b",
 
     "--user-agent",
     USER_AGENT,
@@ -858,12 +1135,23 @@ async function extractYouTubeWithYtDlp(
     url,
   ];
 
-  const result =
-    await runCommand(
-      getYtDlpCommand(),
-      args,
-      YTDLP_TIMEOUT
+  let result;
+
+  try {
+    result =
+      await runCommand(
+        getYtDlpCommand(),
+        args,
+        YTDLP_TIMEOUT
+      );
+  } catch (error) {
+    console.error(
+      "[YTDLP] Command failed:",
+      error.message
     );
+
+    throw error;
+  }
 
   let metadata;
 
@@ -874,7 +1162,10 @@ async function extractYouTubeWithYtDlp(
       );
   } catch {
     console.error(
-      "[YTDLP] Raw output:",
+      "[YTDLP] Invalid JSON received"
+    );
+
+    console.error(
       result.stdout.substring(
         0,
         1000
@@ -894,18 +1185,20 @@ async function extractYouTubeWithYtDlp(
 
   console.log(
     `[YTDLP] Title: ${
-      metadata.title || "Unknown"
+      metadata.title ||
+      "Unknown"
     }`
   );
 
   console.log(
     `[YTDLP] Duration: ${
-      metadata.duration || "Unknown"
+      metadata.duration ||
+      "Unknown"
     }`
   );
 
   // ==================================================
-  // DIRECT URL
+  // DIRECT MEDIA URL
   // ==================================================
 
   if (
@@ -914,8 +1207,31 @@ async function extractYouTubeWithYtDlp(
       metadata.url
     )
   ) {
+    const hasAudio =
+      metadata.acodec &&
+      metadata.acodec !== "none";
+
+    const height =
+      Number(
+        metadata.height || 0
+      );
+
     console.log(
-      "[YTDLP] Direct media URL found"
+      `[YTDLP] Direct format found`
+    );
+
+    console.log(
+      `[YTDLP] Resolution: ${
+        height || "unknown"
+      }p`
+    );
+
+    console.log(
+      `[YTDLP] Audio: ${
+        hasAudio
+          ? "yes"
+          : "no"
+      }`
     );
 
     return {
@@ -941,98 +1257,80 @@ async function extractYouTubeWithYtDlp(
       height:
         metadata.height ||
         null,
+
+      hasAudio,
     };
   }
 
   // ==================================================
-  // REQUESTED FORMATS
+  // FORMAT SEARCH
   // ==================================================
 
-  if (
-    Array.isArray(
-      metadata.formats
-    ) &&
-    metadata.formats.length > 0
-  ) {
-    const formats =
-      metadata.formats
-        .filter(
-          (format) =>
-            format &&
-            typeof format.url ===
-              "string" &&
-            isValidHttpUrl(
-              format.url
-            )
-        )
-        .filter(
-          (format) =>
-            format.vcodec &&
-            format.vcodec !==
-              "none"
-        )
-        .sort(
-          (a, b) =>
-            Number(
-              b.height || 0
-            ) -
-            Number(
-              a.height || 0
-            )
-        );
+  const selected =
+    selectYouTubeFormat(
+      metadata
+    );
 
-    if (
-      formats.length > 0
-    ) {
-      const selected =
-        formats[0];
+  if (selected) {
+    const hasAudio =
+      selected.acodec &&
+      selected.acodec !== "none";
 
-      console.log(
-        `[YTDLP] Format selected: ${
-          selected.format_id ||
-          "unknown"
-        }`
-      );
+    console.log(
+      `[YTDLP] Selected format: ${
+        selected.format_id ||
+        "unknown"
+      }`
+    );
 
-      console.log(
-        `[YTDLP] Resolution: ${
-          selected.width ||
-          "?"
-        }x${
-          selected.height ||
-          "?"
-        }`
-      );
+    console.log(
+      `[YTDLP] Resolution: ${
+        selected.width ||
+        "?"
+      }x${
+        selected.height ||
+        "?"
+      }`
+    );
 
-      return {
-        mediaUrl:
-          selected.url,
+    console.log(
+      `[YTDLP] Audio: ${
+        hasAudio
+          ? "yes"
+          : "no"
+      }`
+    );
 
-        title:
-          metadata.title ||
-          "YouTube video",
+    return {
+      mediaUrl:
+        selected.url,
 
-        duration:
-          metadata.duration ||
-          null,
+      title:
+        metadata.title ||
+        "YouTube video",
 
-        thumbnail:
-          metadata.thumbnail ||
-          null,
+      duration:
+        metadata.duration ||
+        null,
 
-        width:
-          selected.width ||
-          null,
+      thumbnail:
+        metadata.thumbnail ||
+        null,
 
-        height:
-          selected.height ||
-          null,
-      };
-    }
+      width:
+        selected.width ||
+        null,
+
+      height:
+        selected.height ||
+        null,
+
+      hasAudio,
+    };
   }
 
   // ==================================================
-  // FALLBACK MEDIA URL SEARCH
+  // FALLBACK
   // ==================================================
 
   const fallbackUrl =
@@ -1068,6 +1366,8 @@ async function extractYouTubeWithYtDlp(
       height:
         metadata.height ||
         null,
+
+      hasAudio: null,
     };
   }
 
@@ -1128,6 +1428,10 @@ async function extractPlatformMedia(
     );
   }
 
+  // --------------------------------------------------
+  // Try generic media extraction
+  // --------------------------------------------------
+
   const mediaUrl =
     extractBestMediaUrl(
       result
@@ -1145,8 +1449,7 @@ async function extractPlatformMedia(
   // ==================================================
 
   if (
-    platform ===
-    "pinterest"
+    platform === "pinterest"
   ) {
     const imageUrl =
       findFirstUrlByKeys(
@@ -1154,6 +1457,7 @@ async function extractPlatformMedia(
         [
           "image",
           "image_url",
+          "imageurl",
           "imageUrl",
           "thumbnail",
         ]
@@ -1164,6 +1468,7 @@ async function extractPlatformMedia(
         result,
         [
           "video_url",
+          "videourl",
           "videoUrl",
           "video",
           "videos",
@@ -1186,6 +1491,10 @@ async function extractPlatformMedia(
     }
   }
 
+  // ==================================================
+  // NO MEDIA
+  // ==================================================
+
   const error =
     new Error(
       "No downloadable media URL found"
@@ -1205,84 +1514,6 @@ async function extractPlatformMedia(
 }
 
 // ======================================================
-// FIND URL BY KEY
-// ======================================================
-
-function findFirstUrlByKeys(
-  value,
-  keys,
-  depth = 0
-) {
-  if (
-    value === null ||
-    value === undefined ||
-    depth > 15
-  ) {
-    return null;
-  }
-
-  if (
-    Array.isArray(value)
-  ) {
-    for (
-      const item of value
-    ) {
-      const found =
-        findFirstUrlByKeys(
-          item,
-          keys,
-          depth + 1
-        );
-
-      if (found) {
-        return found;
-      }
-    }
-
-    return null;
-  }
-
-  if (
-    typeof value !==
-    "object"
-  ) {
-    return null;
-  }
-
-  for (
-    const [key, item] of Object.entries(
-      value
-    )
-  ) {
-    if (
-      keys.includes(
-        key.toLowerCase()
-      ) &&
-      typeof item ===
-        "string" &&
-      isValidHttpUrl(
-        item
-      )
-    ) {
-      return item;
-    }
-
-    const nested =
-      findFirstUrlByKeys(
-        item,
-        keys,
-        depth + 1
-      );
-
-    if (nested) {
-      return nested;
-    }
-  }
-
-  return null;
-}
-
-// ======================================================
 // ROOT
 // ======================================================
 
@@ -1294,7 +1525,7 @@ app.get(
       service:
         "StreamBox Backend",
       status: "online",
-      version: "4.1.0",
+      version: "4.2.0",
       node:
         process.version,
       timestamp:
@@ -1315,7 +1546,7 @@ app.get(
       service:
         "StreamBox Backend",
       status: "online",
-      version: "4.1.0",
+      version: "4.2.0",
       node:
         process.version,
       timestamp:
@@ -1345,9 +1576,12 @@ app.get(
 
     res.json({
       success: true,
+
       node:
         process.version,
+
       ytDlp,
+
       ffmpeg,
     });
   }
@@ -1362,11 +1596,15 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
+
       message:
         "Extract API is working.",
+
       method: "POST",
+
       endpoint:
         "/api/extract",
+
       usage: {
         body: {
           url:
@@ -1462,10 +1700,6 @@ app.post(
       );
 
       console.log(
-        `[REQUEST] ${inputUrl}`
-      );
-
-      console.log(
         `[REQUEST] Platform: ${
           platform ||
           "unknown"
@@ -1527,6 +1761,10 @@ app.post(
           error.message
         );
 
+        // ----------------------------------------------
+        // Pinterest image
+        // ----------------------------------------------
+
         if (
           error.code ===
           "IMAGE_ONLY"
@@ -1540,20 +1778,23 @@ app.post(
               error.message,
             sourceUrl:
               inputUrl,
-            preparedUrl,
           });
         }
-
-        const message =
-          error.message ||
-          "";
 
         let code =
           error.code ||
           "EXTRACTOR_FAILED";
 
+        const message =
+          error.message ||
+          "";
+
         const lower =
           message.toLowerCase();
+
+        // ----------------------------------------------
+        // Private / Login
+        // ----------------------------------------------
 
         if (
           lower.includes(
@@ -1564,11 +1805,18 @@ app.post(
           ) ||
           lower.includes(
             "sign in"
+          ) ||
+          lower.includes(
+            "authentication"
           )
         ) {
           code =
             "PRIVATE_CONTENT";
         }
+
+        // ----------------------------------------------
+        // Not found
+        // ----------------------------------------------
 
         if (
           lower.includes(
@@ -1579,6 +1827,9 @@ app.post(
           ) ||
           lower.includes(
             "unavailable"
+          ) ||
+          lower.includes(
+            "does not exist"
           )
         ) {
           code =
@@ -1587,8 +1838,11 @@ app.post(
 
         return res.status(502).json({
           success: false,
+
           code,
+
           platform,
+
           error:
             message ||
             "Platform extraction failed",
@@ -1598,17 +1852,15 @@ app.post(
 
           sourceUrl:
             inputUrl,
-
-          preparedUrl,
         });
       }
 
       // ==================================================
-      // VALIDATE MEDIA URL
+      // VALIDATE EXTRACTED RESULT
       // ==================================================
 
       const mediaUrl =
-        extracted.mediaUrl;
+        extracted?.mediaUrl;
 
       if (
         !mediaUrl ||
@@ -1627,6 +1879,19 @@ app.post(
       }
 
       // ==================================================
+      // RESOLUTION
+      // ==================================================
+
+      let resolution = null;
+
+      if (
+        extracted.height
+      ) {
+        resolution =
+          `${extracted.height}p`;
+      }
+
+      // ==================================================
       // SUCCESS
       // ==================================================
 
@@ -1639,6 +1904,13 @@ app.post(
       );
 
       console.log(
+        `[SUCCESS] Resolution: ${
+          resolution ||
+          "unknown"
+        }`
+      );
+
+      console.log(
         "================================================"
       );
 
@@ -1647,12 +1919,23 @@ app.post(
 
         platform,
 
-        resolutions: {
-          "720p":
-            mediaUrl,
-        },
-
+        // Main URL used by Flutter
         mediaUrl,
+
+        // Keep resolutions for backward
+        // compatibility with existing Flutter
+        resolutions:
+          resolution
+            ? {
+                [resolution]:
+                  mediaUrl,
+              }
+            : {
+                original:
+                  mediaUrl,
+              },
+
+        resolution,
 
         sourceUrl:
           inputUrl,
@@ -1678,6 +1961,10 @@ app.post(
         height:
           extracted.height ||
           null,
+
+        hasAudio:
+          extracted.hasAudio ??
+          null,
       });
     } catch (error) {
       console.error(
@@ -1687,8 +1974,10 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         code:
           "INTERNAL_SERVER_ERROR",
+
         error:
           error.message ||
           "Internal server error",
@@ -1705,12 +1994,16 @@ app.use(
   (req, res) => {
     res.status(404).json({
       success: false,
+
       code:
         "ENDPOINT_NOT_FOUND",
+
       error:
         "Endpoint not found",
+
       path:
         req.path,
+
       method:
         req.method,
     });
@@ -1736,8 +2029,10 @@ app.use(
 
     res.status(500).json({
       success: false,
+
       code:
         "INTERNAL_SERVER_ERROR",
+
       error:
         "Internal server error",
     });
@@ -1753,12 +2048,13 @@ app.listen(
   "0.0.0.0",
   () => {
     console.log("");
+
     console.log(
       "================================================"
     );
 
     console.log(
-      "       STREAMBOX BACKEND v4.1.0"
+      "       STREAMBOX BACKEND v4.2.0"
     );
 
     console.log(
