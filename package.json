@@ -1,15 +1,26 @@
 {
   "name": "streambox-backend",
-  "version": "1.0.0",
-  "description": "StreamBox backend API",
+  "version": "4.0.0",
+  "description": "StreamBox video extraction backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "video-downloader",
+    "youtube",
+    "instagram",
+    "tiktok",
+    "facebook",
+    "pinterest",
+    "twitter"
+  ],
+  "author": "StreamBox",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "btch-downloader": "^6.3.6",
     "cors": "^2.8.6",
