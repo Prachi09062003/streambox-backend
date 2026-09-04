@@ -27,8 +27,15 @@ const USER_AGENT =
   "AppleWebKit/537.36 (KHTML, like Gecko) " +
   "Chrome/131.0.0.0 Safari/537.36";
 
-const EXPLICIT_YTDLP_PATH = process.env.YTDLP_PATH || "";
-const EXPLICIT_FFMPEG_PATH = process.env.FFMPEG_PATH || "";
+const EXPLICIT_YTDLP_PATH =
+  process.env.YTDLP_PATH || "";
+
+const EXPLICIT_FFMPEG_PATH =
+  process.env.FFMPEG_PATH || "/usr/bin/ffmpeg";
+
+const DENO_PATH =
+  process.env.DENO_PATH ||
+  "/root/.deno/bin/deno";
 
 // ======================================================
 // MIDDLEWARE
@@ -64,7 +71,9 @@ function cleanInputUrl(value) {
     return "";
   }
 
-  return value.trim().replace(/^<|>$/g, "");
+  return value
+    .trim()
+    .replace(/^<|>$/g, "");
 }
 
 function normalizeUrl(value) {
@@ -190,7 +199,8 @@ async function resolveRedirectUrl(inputUrl) {
         response.status >= 300 &&
         response.status < 400
       ) {
-        const location = response.headers.get("location");
+        const location =
+          response.headers.get("location");
 
         if (!location) {
           break;
@@ -211,7 +221,12 @@ async function resolveRedirectUrl(inputUrl) {
       break;
     } catch (error) {
       clearTimeout(timer);
-      console.log("[REDIRECT] Failed:", error.message);
+
+      console.log(
+        "[REDIRECT] Failed:",
+        error.message
+      );
+
       break;
     }
   }
@@ -239,9 +254,12 @@ async function prepareUrl(platform, inputUrl) {
       url.includes("fb.watch") ||
       url.includes("/share/")
     ) {
-      console.log(`[PREPARE] Resolving ${platform} URL`);
+      console.log(
+        `[PREPARE] Resolving ${platform} URL`
+      );
 
-      const resolved = await resolveRedirectUrl(url);
+      const resolved =
+        await resolveRedirectUrl(url);
 
       if (resolved) {
         url = resolved;
@@ -249,19 +267,30 @@ async function prepareUrl(platform, inputUrl) {
     }
   }
 
+  // ====================================================
+  // YOUTUBE NORMALIZATION
+  // ====================================================
+
   if (platform === "youtube") {
     try {
       const parsed = new URL(url);
 
-      if (parsed.hostname === "youtu.be") {
+      // youtu.be/VIDEO_ID
+      if (
+        parsed.hostname === "youtu.be"
+      ) {
         const id = parsed.pathname
           .split("/")
           .filter(Boolean)[0];
 
         if (id) {
-          url = `https://www.youtube.com/watch?v=${id}`;
+          url =
+            `https://www.youtube.com/watch?v=${id}`;
         }
-      } else if (
+      }
+
+      // youtube.com/shorts/VIDEO_ID
+      else if (
         parsed.pathname.startsWith("/shorts/")
       ) {
         const id = parsed.pathname
@@ -269,9 +298,13 @@ async function prepareUrl(platform, inputUrl) {
           .filter(Boolean)[1];
 
         if (id) {
-          url = `https://www.youtube.com/watch?v=${id}`;
+          url =
+            `https://www.youtube.com/watch?v=${id}`;
         }
-      } else if (
+      }
+
+      // youtube.com/embed/VIDEO_ID
+      else if (
         parsed.pathname.startsWith("/embed/")
       ) {
         const id = parsed.pathname
@@ -279,9 +312,13 @@ async function prepareUrl(platform, inputUrl) {
           .filter(Boolean)[1];
 
         if (id) {
-          url = `https://www.youtube.com/watch?v=${id}`;
+          url =
+            `https://www.youtube.com/watch?v=${id}`;
         }
-      } else if (
+      }
+
+      // youtube.com/live/VIDEO_ID
+      else if (
         parsed.pathname.startsWith("/live/")
       ) {
         const id = parsed.pathname
@@ -289,7 +326,23 @@ async function prepareUrl(platform, inputUrl) {
           .filter(Boolean)[1];
 
         if (id) {
-          url = `https://www.youtube.com/watch?v=${id}`;
+          url =
+            `https://www.youtube.com/watch?v=${id}`;
+        }
+      }
+
+      // youtube.com/watch?v=VIDEO_ID
+      else if (
+        parsed.hostname.includes(
+          "youtube.com"
+        )
+      ) {
+        const videoId =
+          parsed.searchParams.get("v");
+
+        if (videoId) {
+          url =
+            `https://www.youtube.com/watch?v=${videoId}`;
         }
       }
     } catch {
@@ -304,27 +357,38 @@ async function prepareUrl(platform, inputUrl) {
 // COMMAND RUNNER
 // ======================================================
 
-function runCommand(command, args, timeoutMs) {
+function runCommand(
+  command,
+  args,
+  timeoutMs
+) {
   return new Promise((resolve, reject) => {
     let stdout = "";
     let stderr = "";
     let completed = false;
 
-    const child = spawn(command, args, {
-      shell: false,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PATH: [
-          process.env.PATH || "",
-          "/usr/local/bin",
-          "/usr/bin",
-          "/bin",
-        ]
-          .filter(Boolean)
-          .join(":"),
-      },
-    });
+    const child = spawn(
+      command,
+      args,
+      {
+        shell: false,
+        windowsHide: true,
+
+        env: {
+          ...process.env,
+
+          PATH: [
+            process.env.PATH || "",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/root/.deno/bin",
+          ]
+            .filter(Boolean)
+            .join(":"),
+        },
+      }
+    );
 
     const timer = setTimeout(() => {
       if (completed) {
@@ -343,54 +407,71 @@ function runCommand(command, args, timeoutMs) {
         )} seconds`
       );
 
-      error.code = "COMMAND_TIMEOUT";
+      error.code =
+        "COMMAND_TIMEOUT";
 
       reject(error);
     }, timeoutMs);
 
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error) => {
-      if (completed) {
-        return;
+    child.stdout.on(
+      "data",
+      (chunk) => {
+        stdout += chunk.toString();
       }
+    );
 
-      completed = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (completed) {
-        return;
+    child.stderr.on(
+      "data",
+      (chunk) => {
+        stderr += chunk.toString();
       }
+    );
 
-      completed = true;
-      clearTimeout(timer);
+    child.on(
+      "error",
+      (error) => {
+        if (completed) {
+          return;
+        }
 
-      if (code !== 0) {
-        const error = new Error(
-          stderr.trim() ||
-            `${command} exited with code ${code}`
-        );
-
-        error.code = `COMMAND_EXIT_${code}`;
+        completed = true;
+        clearTimeout(timer);
 
         reject(error);
-        return;
       }
+    );
 
-      resolve({
-        stdout,
-        stderr,
-      });
-    });
+    child.on(
+      "close",
+      (code) => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        clearTimeout(timer);
+
+        if (code !== 0) {
+          const error =
+            new Error(
+              stderr.trim() ||
+                `${command} exited with code ${code}`
+            );
+
+          error.code =
+            `COMMAND_EXIT_${code}`;
+
+          reject(error);
+
+          return;
+        }
+
+        resolve({
+          stdout,
+          stderr,
+        });
+      }
+    );
   });
 }
 
@@ -410,11 +491,13 @@ async function getYtDlpRunner() {
 
   possibleCommands.push(
     {
-      command: "/usr/local/bin/yt-dlp",
+      command:
+        "/usr/local/bin/yt-dlp",
       args: [],
     },
     {
-      command: "/usr/bin/yt-dlp",
+      command:
+        "/usr/bin/yt-dlp",
       args: [],
     },
     {
@@ -423,26 +506,40 @@ async function getYtDlpRunner() {
     },
     {
       command: "python3",
-      args: ["-m", "yt_dlp"],
+      args: [
+        "-m",
+        "yt_dlp",
+      ],
     },
     {
       command: "python",
-      args: ["-m", "yt_dlp"],
+      args: [
+        "-m",
+        "yt_dlp",
+      ],
     }
   );
 
-  for (const item of possibleCommands) {
+  for (
+    const item of possibleCommands
+  ) {
     try {
-      await runCommand(
-        item.command,
-        [...item.args, "--version"],
-        15000
+      const result =
+        await runCommand(
+          item.command,
+          [
+            ...item.args,
+            "--version",
+          ],
+          15000
+        );
+
+      console.log(
+        `[YTDLP] Using ${item.command}`
       );
 
       console.log(
-        `[YTDLP] Using ${item.command} ${
-          item.args.length ? item.args.join(" ") : ""
-        }`
+        `[YTDLP] Version: ${result.stdout.trim()}`
       );
 
       return item;
@@ -454,17 +551,19 @@ async function getYtDlpRunner() {
     }
   }
 
-  const error = new Error(
-    "yt-dlp is not installed or cannot be executed in the Render container."
-  );
+  const error =
+    new Error(
+      "yt-dlp is not installed or cannot be executed in the Render container."
+    );
 
-  error.code = "YTDLP_NOT_FOUND";
+  error.code =
+    "YTDLP_NOT_FOUND";
 
   throw error;
 }
 
 // ======================================================
-// FIND FFMPEG
+// FFMPEG
 // ======================================================
 
 function getFfmpegCommand() {
@@ -478,11 +577,19 @@ function getFfmpegCommand() {
 // YT-DLP EXTRACTION
 // ======================================================
 
-async function extractWithYtDlp(url, platform) {
-  const runner = await getYtDlpRunner();
+async function extractWithYtDlp(
+  url,
+  platform
+) {
+  const runner =
+    await getYtDlpRunner();
 
   const args = [
     ...runner.args,
+
+    // --------------------------------------------------
+    // BASIC
+    // --------------------------------------------------
 
     "--dump-single-json",
     "--no-playlist",
@@ -490,41 +597,125 @@ async function extractWithYtDlp(url, platform) {
     "--no-warnings",
     "--ignore-config",
 
-    // Prefer MP4 video and M4A audio.
-    // Fall back to the best available format.
+    // --------------------------------------------------
+    // FLEXIBLE FORMAT
+    // --------------------------------------------------
+
     "--format",
-    "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4][height<=1080]/best[height<=1080]/best",
+    "best",
+
+    // --------------------------------------------------
+    // USER AGENT
+    // --------------------------------------------------
 
     "--user-agent",
     USER_AGENT,
-
-    "--referer",
-    url,
-
-    "--ffmpeg-location",
-    getFfmpegCommand(),
-
-    url,
   ];
+
+  // ====================================================
+  // YOUTUBE
+  // ====================================================
+
+  if (platform === "youtube") {
+    console.log(
+      "[YTDLP] Enabling Deno for YouTube"
+    );
+
+    args.push(
+      "--js-runtimes",
+      `deno:${DENO_PATH}`,
+
+      // Allow yt-dlp to obtain EJS components.
+      "--remote-components",
+      "ejs:github"
+    );
+  }
+
+  // ====================================================
+  // PLATFORM-SPECIFIC OPTIONS
+  // ====================================================
+
+  if (
+    platform === "instagram" ||
+    platform === "pinterest"
+  ) {
+    args.push(
+      "--extractor-retries",
+      "3"
+    );
+  }
+
+  if (platform === "youtube") {
+    args.push(
+      "--extractor-retries",
+      "3",
+
+      "--fragment-retries",
+      "3",
+
+      "--retries",
+      "3"
+    );
+  }
+
+  // ----------------------------------------------------
+  // REFERER
+  // ----------------------------------------------------
+
+  args.push(
+    "--referer",
+    url
+  );
+
+  // ----------------------------------------------------
+  // URL MUST BE LAST
+  // ----------------------------------------------------
+
+  args.push(url);
 
   console.log(
     `[YTDLP] Extracting ${platform}: ${url}`
   );
 
-  const result = await runCommand(
-    runner.command,
-    args,
-    YTDLP_TIMEOUT
-  );
+  const result =
+    await runCommand(
+      runner.command,
+      args,
+      YTDLP_TIMEOUT
+    );
+
+  // ====================================================
+  // PARSE JSON
+  // ====================================================
 
   let metadata;
 
   try {
-    metadata = JSON.parse(result.stdout);
+    metadata =
+      JSON.parse(
+        result.stdout
+      );
   } catch {
     console.error(
-      "[YTDLP] Invalid JSON:",
-      result.stdout.substring(0, 1000)
+      "[YTDLP] Invalid JSON:"
+    );
+
+    console.error(
+      result.stdout.substring(
+        0,
+        2000
+      )
+    );
+
+    console.error(
+      "[YTDLP] stderr:"
+    );
+
+    console.error(
+      result.stderr.substring(
+        0,
+        2000
+      )
     );
 
     throw new Error(
@@ -538,75 +729,166 @@ async function extractWithYtDlp(url, platform) {
     );
   }
 
+  // ====================================================
+  // SELECT FORMAT
+  // ====================================================
+
   let selectedFormat = null;
 
+  // yt-dlp sometimes provides a direct
+  // media URL at metadata.url.
   if (
     metadata.url &&
-    isValidHttpUrl(metadata.url)
+    isValidHttpUrl(
+      metadata.url
+    )
   ) {
-    selectedFormat = metadata;
+    selectedFormat =
+      metadata;
   }
+
+  // ====================================================
+  // SEARCH FORMATS
+  // ====================================================
 
   if (
     !selectedFormat &&
-    Array.isArray(metadata.formats)
+    Array.isArray(
+      metadata.formats
+    )
   ) {
-    const formats = metadata.formats
-      .filter((format) => {
-        return (
-          format &&
-          typeof format.url === "string" &&
-          isValidHttpUrl(format.url) &&
-          format.vcodec &&
-          format.vcodec !== "none" &&
-          (!format.height ||
-            Number(format.height) <= 1080)
+    const formats =
+      metadata.formats
+        .filter(
+          (format) => {
+            if (
+              !format ||
+              typeof format.url !==
+                "string"
+            ) {
+              return false;
+            }
+
+            if (
+              !isValidHttpUrl(
+                format.url
+              )
+            ) {
+              return false;
+            }
+
+            // Must contain video.
+            if (
+              !format.vcodec ||
+              format.vcodec ===
+                "none"
+            ) {
+              return false;
+            }
+
+            return true;
+          }
+        )
+        .sort(
+          (a, b) => {
+            const aHeight =
+              Number(
+                a.height || 0
+              );
+
+            const bHeight =
+              Number(
+                b.height || 0
+              );
+
+            // Prefer <=1080 when available.
+            const a1080 =
+              aHeight > 1080
+                ? 0
+                : 1;
+
+            const b1080 =
+              bHeight > 1080
+                ? 0
+                : 1;
+
+            if (
+              b1080 !== a1080
+            ) {
+              return (
+                b1080 - a1080
+              );
+            }
+
+            if (
+              bHeight !==
+              aHeight
+            ) {
+              return (
+                bHeight -
+                aHeight
+              );
+            }
+
+            // Prefer formats with audio.
+            const aAudio =
+              a.acodec &&
+              a.acodec !==
+                "none"
+                ? 1
+                : 0;
+
+            const bAudio =
+              b.acodec &&
+              b.acodec !==
+                "none"
+                ? 1
+                : 0;
+
+            return (
+              bAudio -
+              aAudio
+            );
+          }
         );
-      })
-      .sort((a, b) => {
-        const aHeight = Number(a.height || 0);
-        const bHeight = Number(b.height || 0);
 
-        if (bHeight !== aHeight) {
-          return bHeight - aHeight;
-        }
-
-        const aAudio =
-          a.acodec && a.acodec !== "none" ? 1 : 0;
-
-        const bAudio =
-          b.acodec && b.acodec !== "none" ? 1 : 0;
-
-        return bAudio - aAudio;
-      });
-
-    selectedFormat = formats[0] || null;
+    selectedFormat =
+      formats[0] ||
+      null;
   }
+
+  // ====================================================
+  // VALIDATE
+  // ====================================================
 
   if (
     !selectedFormat ||
     !selectedFormat.url
   ) {
     throw new Error(
-      "yt-dlp did not return a downloadable media URL."
+      `yt-dlp did not return a downloadable media URL for ${platform}.`
     );
   }
 
-  const mediaUrl = selectedFormat.url;
+  const mediaUrl =
+    selectedFormat.url;
 
   const hasAudio =
     selectedFormat.acodec &&
-    selectedFormat.acodec !== "none";
+    selectedFormat.acodec !==
+      "none";
 
   const extension =
     selectedFormat.ext ||
     metadata.ext ||
     "mp4";
 
+  const formatId =
+    selectedFormat.format_id ||
+    "unknown";
+
   console.log(
-    `[YTDLP] Selected format: ${
-      selectedFormat.format_id || "unknown"
-    }`
+    `[YTDLP] Selected format: ${formatId}`
   );
 
   console.log(
@@ -615,31 +897,55 @@ async function extractWithYtDlp(url, platform) {
 
   console.log(
     `[YTDLP] Audio: ${
-      hasAudio ? "yes" : "no"
+      hasAudio
+        ? "yes"
+        : "no"
     }`
   );
 
+  console.log(
+    `[YTDLP] Resolution: ${
+      selectedFormat.height
+        ? selectedFormat.height +
+          "p"
+        : "unknown"
+    }`
+  );
+
+  // ====================================================
+  // RETURN
+  // ====================================================
+
   return {
     mediaUrl,
+
     extension,
+
     title:
       metadata.title ||
       `${platform} video`,
+
     thumbnail:
       metadata.thumbnail ||
       null,
+
     duration:
       metadata.duration ||
       null,
+
     width:
       selectedFormat.width ||
       metadata.width ||
       null,
+
     height:
       selectedFormat.height ||
       metadata.height ||
       null,
+
     hasAudio,
+
+    formatId,
   };
 }
 
@@ -647,7 +953,10 @@ async function extractWithYtDlp(url, platform) {
 // BTCH FALLBACK
 // ======================================================
 
-async function runBtchExtractor(platform, url) {
+async function runBtchExtractor(
+  platform,
+  url
+) {
   switch (platform) {
     case "instagram":
       return await igdl(url);
@@ -672,15 +981,18 @@ async function runBtchExtractor(platform, url) {
 }
 
 // ======================================================
-// RECURSIVE URL EXTRACTION
+// MEDIA URL DETECTION
 // ======================================================
 
 function isMediaUrl(value) {
-  if (!isValidHttpUrl(value)) {
+  if (
+    !isValidHttpUrl(value)
+  ) {
     return false;
   }
 
-  const lower = value.toLowerCase();
+  const lower =
+    value.toLowerCase();
 
   return (
     lower.includes(".mp4") ||
@@ -696,7 +1008,15 @@ function isMediaUrl(value) {
   );
 }
 
-function collectUrls(value, output = [], depth = 0) {
+// ======================================================
+// RECURSIVE URL COLLECTION
+// ======================================================
+
+function collectUrls(
+  value,
+  output = [],
+  depth = 0
+) {
   if (
     value === null ||
     value === undefined ||
@@ -705,25 +1025,49 @@ function collectUrls(value, output = [], depth = 0) {
     return output;
   }
 
-  if (typeof value === "string") {
-    if (isMediaUrl(value)) {
+  if (
+    typeof value ===
+    "string"
+  ) {
+    if (
+      isMediaUrl(value)
+    ) {
       output.push(value);
     }
 
     return output;
   }
 
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectUrls(item, output, depth + 1);
+  if (
+    Array.isArray(value)
+  ) {
+    for (
+      const item of value
+    ) {
+      collectUrls(
+        item,
+        output,
+        depth + 1
+      );
     }
 
     return output;
   }
 
-  if (typeof value === "object") {
-    for (const item of Object.values(value)) {
-      collectUrls(item, output, depth + 1);
+  if (
+    typeof value ===
+    "object"
+  ) {
+    for (
+      const item of Object.values(
+        value
+      )
+    ) {
+      collectUrls(
+        item,
+        output,
+        depth + 1
+      );
     }
   }
 
@@ -731,65 +1075,130 @@ function collectUrls(value, output = [], depth = 0) {
 }
 
 // ======================================================
-// FALLBACK MEDIA EXTRACTION
+// BTCH FALLBACK EXTRACTION
 // ======================================================
 
-async function extractWithBtch(url, platform) {
-  const result = await runBtchExtractor(
-    platform,
-    url
-  );
+async function extractWithBtch(
+  url,
+  platform
+) {
+  const result =
+    await runBtchExtractor(
+      platform,
+      url
+    );
 
   const urls = [
-    ...new Set(collectUrls(result)),
+    ...new Set(
+      collectUrls(result)
+    ),
   ];
 
-  if (urls.length === 0) {
+  if (
+    urls.length === 0
+  ) {
     throw new Error(
       "No downloadable media URL found."
     );
   }
 
-  // Prefer MP4 and then other video formats.
-  urls.sort((a, b) => {
-    function score(value) {
-      const lower = value.toLowerCase();
+  urls.sort(
+    (a, b) => {
+      function score(value) {
+        const lower =
+          value.toLowerCase();
 
-      let result = 0;
+        let score = 0;
 
-      if (lower.includes(".mp4")) result += 100;
-      if (lower.includes(".m4v")) result += 90;
-      if (lower.includes(".mov")) result += 80;
-      if (lower.includes(".webm")) result += 70;
-      if (lower.includes("1080")) result += 40;
-      if (lower.includes("720")) result += 30;
-      if (lower.includes("480")) result += 20;
-      if (lower.includes("video")) result += 10;
+        if (
+          lower.includes(".mp4")
+        ) {
+          score += 100;
+        }
 
-      return result;
+        if (
+          lower.includes(".m4v")
+        ) {
+          score += 90;
+        }
+
+        if (
+          lower.includes(".mov")
+        ) {
+          score += 80;
+        }
+
+        if (
+          lower.includes(".webm")
+        ) {
+          score += 70;
+        }
+
+        if (
+          lower.includes("1080")
+        ) {
+          score += 40;
+        }
+
+        if (
+          lower.includes("720")
+        ) {
+          score += 30;
+        }
+
+        if (
+          lower.includes("480")
+        ) {
+          score += 20;
+        }
+
+        if (
+          lower.includes("video")
+        ) {
+          score += 10;
+        }
+
+        return score;
+      }
+
+      return (
+        score(b) -
+        score(a)
+      );
     }
+  );
 
-    return score(b) - score(a);
-  });
-
-  const selectedUrl = urls[0];
+  const selectedUrl =
+    urls[0];
 
   let extension = "mp4";
 
-  const lower = selectedUrl.toLowerCase();
+  const lower =
+    selectedUrl.toLowerCase();
 
-  if (lower.includes(".webm")) {
+  if (
+    lower.includes(".webm")
+  ) {
     extension = "webm";
-  } else if (lower.includes(".mov")) {
+  } else if (
+    lower.includes(".mov")
+  ) {
     extension = "mov";
-  } else if (lower.includes(".m4v")) {
+  } else if (
+    lower.includes(".m4v")
+  ) {
     extension = "m4v";
   }
 
   return {
-    mediaUrl: selectedUrl,
+    mediaUrl:
+      selectedUrl,
+
     extension,
-    title: `${platform} video`,
+
+    title:
+      `${platform} video`,
+
     thumbnail: null,
     duration: null,
     width: null,
@@ -799,298 +1208,563 @@ async function extractWithBtch(url, platform) {
 }
 
 // ======================================================
-// MAIN EXTRACTION
+// MAIN PLATFORM EXTRACTION
 // ======================================================
 
-async function extractPlatformMedia(platform, url) {
-  // Use yt-dlp first for all supported platforms.
-  // It generally returns better format information.
+async function extractPlatformMedia(
+  platform,
+  url
+) {
   try {
-    return await extractWithYtDlp(url, platform);
+    return await extractWithYtDlp(
+      url,
+      platform
+    );
   } catch (error) {
     console.error(
       `[YTDLP] ${platform} failed:`,
       error.message
     );
 
-    if (platform === "youtube") {
+    // YouTube has no btch fallback.
+    if (
+      platform ===
+      "youtube"
+    ) {
       throw error;
     }
-  }
 
-  // Fallback for Instagram, TikTok, Facebook,
-  // Pinterest and Twitter/X.
-  return await extractWithBtch(url, platform);
+    // Try btch for the other platforms.
+    try {
+      console.log(
+        `[BTCH] Trying fallback for ${platform}`
+      );
+
+      return await extractWithBtch(
+        url,
+        platform
+      );
+    } catch (fallbackError) {
+      console.error(
+        `[BTCH] ${platform} failed:`,
+        fallbackError.message
+      );
+
+      throw new Error(
+        `No downloadable media found. yt-dlp: ${error.message}; fallback: ${fallbackError.message}`
+      );
+    }
+  }
 }
 
 // ======================================================
 // ROOT
 // ======================================================
 
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    service: "StreamBox Backend",
-    status: "online",
-    version: "6.0.0",
-    node: process.version,
-    timestamp: new Date().toISOString(),
-  });
-});
+app.get(
+  "/",
+  (req, res) => {
+    res.json({
+      success: true,
+      service:
+        "StreamBox Backend",
+      status: "online",
+      version: "7.0.0",
+      node:
+        process.version,
+      timestamp:
+        new Date().toISOString(),
+    });
+  }
+);
 
 // ======================================================
 // HEALTH
 // ======================================================
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    service: "StreamBox Backend",
-    status: "online",
-    version: "6.0.0",
-    node: process.version,
-    timestamp: new Date().toISOString(),
-  });
-});
+app.get(
+  "/api/health",
+  (req, res) => {
+    res.json({
+      success: true,
+      service:
+        "StreamBox Backend",
+      status: "online",
+      version: "7.0.0",
+      node:
+        process.version,
+      timestamp:
+        new Date().toISOString(),
+    });
+  }
+);
 
 // ======================================================
 // TOOLS
 // ======================================================
 
-app.get('/api/tools', async (req, res) => {
-  const tools = {
-    ytDlp: {
-      path: YTDLP_PATH,
-      installed: false,
-      version: null,
-      error: null,
-    },
-    ffmpeg: {
-      path: FFMPEG_PATH,
-      installed: false,
-      version: null,
-      error: null,
-    },
-  };
+app.get(
+  "/api/tools",
+  async (req, res) => {
+    const tools = {
+      ytDlp: {
+        path:
+          EXPLICIT_YTDLP_PATH ||
+          "/usr/local/bin/yt-dlp",
+        installed: false,
+        version: null,
+        error: null,
+      },
 
-  try {
-    const result = await runCommand(YTDLP_PATH, ['--version'], {
-      timeout: 15000,
+      ffmpeg: {
+        path:
+          getFfmpegCommand(),
+        installed: false,
+        version: null,
+        error: null,
+      },
+
+      deno: {
+        path: DENO_PATH,
+        installed: false,
+        version: null,
+        error: null,
+      },
+    };
+
+    // --------------------------------------------------
+    // YT-DLP
+    // --------------------------------------------------
+
+    try {
+      const runner =
+        await getYtDlpRunner();
+
+      const result =
+        await runCommand(
+          runner.command,
+          [
+            ...runner.args,
+            "--version",
+          ],
+          15000
+        );
+
+      tools.ytDlp.path =
+        runner.command;
+
+      tools.ytDlp.installed =
+        true;
+
+      tools.ytDlp.version =
+        result.stdout.trim();
+    } catch (error) {
+      tools.ytDlp.error =
+        error.message;
+    }
+
+    // --------------------------------------------------
+    // FFMPEG
+    // --------------------------------------------------
+
+    try {
+      const result =
+        await runCommand(
+          getFfmpegCommand(),
+          ["-version"],
+          15000
+        );
+
+      tools.ffmpeg.installed =
+        true;
+
+      tools.ffmpeg.version =
+        result.stdout
+          .split("\n")[0]
+          .trim();
+    } catch (error) {
+      tools.ffmpeg.error =
+        error.message;
+    }
+
+    // --------------------------------------------------
+    // DENO
+    // --------------------------------------------------
+
+    try {
+      const result =
+        await runCommand(
+          DENO_PATH,
+          ["--version"],
+          15000
+        );
+
+      tools.deno.installed =
+        true;
+
+      tools.deno.version =
+        result.stdout.trim();
+    } catch (error) {
+      tools.deno.error =
+        error.message;
+    }
+
+    res.json({
+      success:
+        tools.ytDlp.installed &&
+        tools.ffmpeg.installed &&
+        tools.deno.installed,
+
+      tools,
     });
-
-    tools.ytDlp.installed = true;
-    tools.ytDlp.version = result.stdout.trim();
-  } catch (error) {
-    tools.ytDlp.error = error.message;
   }
-
-  try {
-    const result = await runCommand(FFMPEG_PATH, ['-version'], {
-      timeout: 15000,
-    });
-
-    tools.ffmpeg.installed = true;
-    tools.ffmpeg.version =
-      result.stdout.split('\n')[0].trim();
-  } catch (error) {
-    tools.ffmpeg.error = error.message;
-  }
-
-  res.json({
-    success:
-      tools.ytDlp.installed &&
-      tools.ffmpeg.installed,
-    tools,
-  });
-});
+);
 
 // ======================================================
 // GET EXTRACT INFO
 // ======================================================
 
-app.get("/api/extract", (req, res) => {
-  res.json({
-    success: true,
-    method: "POST",
-    endpoint: "/api/extract",
-    example: {
-      url: "https://www.youtube.com/watch?v=example",
-    },
-  });
-});
+app.get(
+  "/api/extract",
+  (req, res) => {
+    res.json({
+      success: true,
+      method: "POST",
+      endpoint:
+        "/api/extract",
+
+      supportedPlatforms: [
+        "Instagram",
+        "TikTok",
+        "Facebook",
+        "Pinterest",
+        "Twitter/X",
+        "YouTube",
+      ],
+
+      example: {
+        url:
+          "https://www.youtube.com/watch?v=example",
+      },
+    });
+  }
+);
 
 // ======================================================
 // MAIN EXTRACT API
 // ======================================================
 
-app.post("/api/extract", async (req, res) => {
-  const started = Date.now();
+app.post(
+  "/api/extract",
+  async (req, res) => {
+    const started =
+      Date.now();
 
-  try {
-    const rawUrl = req.body?.url;
+    try {
+      // ------------------------------------------------
+      // INPUT
+      // ------------------------------------------------
 
-    if (
-      typeof rawUrl !== "string" ||
-      !rawUrl.trim()
-    ) {
-      return res.status(400).json({
-        success: false,
-        code: "URL_REQUIRED",
-        error: "A valid URL is required.",
-      });
-    }
+      const rawUrl =
+        req.body?.url;
 
-    const inputUrl = cleanInputUrl(rawUrl);
+      if (
+        typeof rawUrl !==
+          "string" ||
+        !rawUrl.trim()
+      ) {
+        return res.status(400).json({
+          success: false,
+          code:
+            "URL_REQUIRED",
+          error:
+            "A valid URL is required.",
+        });
+      }
 
-    if (!isValidHttpUrl(inputUrl)) {
-      return res.status(400).json({
-        success: false,
-        code: "INVALID_URL",
-        error: "Invalid HTTP/HTTPS URL.",
-      });
-    }
+      const inputUrl =
+        cleanInputUrl(
+          rawUrl
+        );
 
-    const platform = getPlatform(inputUrl);
+      if (
+        !isValidHttpUrl(
+          inputUrl
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          code:
+            "INVALID_URL",
+          error:
+            "Invalid HTTP/HTTPS URL.",
+        });
+      }
 
-    if (!platform) {
-      return res.status(400).json({
-        success: false,
-        code: "UNSUPPORTED_PLATFORM",
-        error: "Unsupported platform.",
-        supportedPlatforms: [
-          "Instagram",
-          "TikTok",
-          "Facebook",
-          "Pinterest",
-          "Twitter/X",
-          "YouTube",
-        ],
-      });
-    }
+      // ------------------------------------------------
+      // PLATFORM
+      // ------------------------------------------------
 
-    console.log("");
-    console.log("==============================================");
-    console.log(`[REQUEST] ${inputUrl}`);
-    console.log(`[PLATFORM] ${platform}`);
+      const platform =
+        getPlatform(
+          inputUrl
+        );
 
-    const preparedUrl = await prepareUrl(
-      platform,
-      inputUrl
-    );
+      if (!platform) {
+        return res.status(400).json({
+          success: false,
+          code:
+            "UNSUPPORTED_PLATFORM",
+          error:
+            "Unsupported platform.",
 
-    console.log(`[PREPARED] ${preparedUrl}`);
+          supportedPlatforms: [
+            "Instagram",
+            "TikTok",
+            "Facebook",
+            "Pinterest",
+            "Twitter/X",
+            "YouTube",
+          ],
+        });
+      }
 
-    const extracted =
-      await extractPlatformMedia(
+      console.log("");
+      console.log(
+        "=============================================="
+      );
+
+      console.log(
+        `[REQUEST] ${inputUrl}`
+      );
+
+      console.log(
+        `[PLATFORM] ${platform}`
+      );
+
+      // ------------------------------------------------
+      // PREPARE URL
+      // ------------------------------------------------
+
+      const preparedUrl =
+        await prepareUrl(
+          platform,
+          inputUrl
+        );
+
+      console.log(
+        `[PREPARED] ${preparedUrl}`
+      );
+
+      // ------------------------------------------------
+      // EXTRACT
+      // ------------------------------------------------
+
+      const extracted =
+        await extractPlatformMedia(
+          platform,
+          preparedUrl
+        );
+
+      // ------------------------------------------------
+      // VALIDATE
+      // ------------------------------------------------
+
+      if (
+        !extracted ||
+        !extracted.mediaUrl ||
+        !isValidHttpUrl(
+          extracted.mediaUrl
+        )
+      ) {
+        throw new Error(
+          "Extractor returned an invalid media URL."
+        );
+      }
+
+      // ------------------------------------------------
+      // RESOLUTION
+      // ------------------------------------------------
+
+      const resolution =
+        extracted.height
+          ? `${extracted.height}p`
+          : null;
+
+      const processingTimeMs =
+        Date.now() -
+        started;
+
+      console.log(
+        `[SUCCESS] ${platform} completed in ${processingTimeMs}ms`
+      );
+
+      console.log(
+        "=============================================="
+      );
+
+      // ------------------------------------------------
+      // RESPONSE
+      // ------------------------------------------------
+
+      return res.status(200).json({
+        success: true,
+
         platform,
-        preparedUrl
+
+        mediaUrl:
+          extracted.mediaUrl,
+
+        extension:
+          extracted.extension ||
+          "mp4",
+
+        resolutions:
+          resolution
+            ? {
+                [resolution]:
+                  extracted.mediaUrl,
+              }
+            : {
+                original:
+                  extracted.mediaUrl,
+              },
+
+        resolution,
+
+        sourceUrl:
+          inputUrl,
+
+        preparedUrl,
+
+        processingTimeMs,
+
+        title:
+          extracted.title ||
+          null,
+
+        thumbnail:
+          extracted.thumbnail ||
+          null,
+
+        duration:
+          extracted.duration ||
+          null,
+
+        width:
+          extracted.width ||
+          null,
+
+        height:
+          extracted.height ||
+          null,
+
+        hasAudio:
+          extracted.hasAudio ===
+          undefined
+            ? null
+            : extracted.hasAudio,
+
+        formatId:
+          extracted.formatId ||
+          null,
+      });
+    } catch (error) {
+      console.error(
+        "[EXTRACTION ERROR]",
+        error.message
       );
 
-    if (
-      !extracted ||
-      !extracted.mediaUrl ||
-      !isValidHttpUrl(extracted.mediaUrl)
-    ) {
-      throw new Error(
-        "Extractor returned an invalid media URL."
-      );
+      let code =
+        error.code ||
+        "EXTRACTOR_FAILED";
+
+      if (
+        error.code ===
+          "YTDLP_NOT_FOUND" ||
+        error.code ===
+          "ENOENT"
+      ) {
+        code =
+          "YTDLP_NOT_FOUND";
+      }
+
+      return res.status(502).json({
+        success: false,
+
+        code,
+
+        error:
+          error.message,
+
+        message:
+          "The content may be private, deleted, restricted, expired, image-only, or unsupported.",
+      });
     }
-
-    const resolution = extracted.height
-      ? `${extracted.height}p`
-      : null;
-
-    const processingTimeMs =
-      Date.now() - started;
-
-    console.log(
-      `[SUCCESS] ${platform} completed in ${processingTimeMs}ms`
-    );
-
-    console.log("==============================================");
-
-    return res.status(200).json({
-      success: true,
-      platform,
-      mediaUrl: extracted.mediaUrl,
-
-      // Flutter can use this to select the correct extension.
-      extension: extracted.extension || "mp4",
-
-      resolutions: resolution
-        ? {
-            [resolution]: extracted.mediaUrl,
-          }
-        : {
-            original: extracted.mediaUrl,
-          },
-
-      resolution,
-      sourceUrl: inputUrl,
-      preparedUrl,
-      processingTimeMs,
-
-      title: extracted.title || null,
-      thumbnail: extracted.thumbnail || null,
-      duration: extracted.duration || null,
-      width: extracted.width || null,
-      height: extracted.height || null,
-      hasAudio:
-        extracted.hasAudio === undefined
-          ? null
-          : extracted.hasAudio,
-    });
-  } catch (error) {
-    console.error(
-      "[EXTRACTION ERROR]",
-      error.message
-    );
-
-    let code = error.code || "EXTRACTOR_FAILED";
-
-    if (
-      error.code === "YTDLP_NOT_FOUND" ||
-      error.code === "ENOENT" ||
-      error.message
-        .toLowerCase()
-        .includes("yt-dlp")
-    ) {
-      code = "YTDLP_NOT_FOUND";
-    }
-
-    return res.status(502).json({
-      success: false,
-      code,
-      error: error.message,
-      message:
-        "The content may be private, deleted, restricted, expired, or unsupported.",
-    });
   }
-});
+);
 
 // ======================================================
 // 404
 // ======================================================
 
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    code: "ENDPOINT_NOT_FOUND",
-    error: "Endpoint not found.",
-  });
-});
+app.use(
+  (req, res) => {
+    res.status(404).json({
+      success: false,
+      code:
+        "ENDPOINT_NOT_FOUND",
+      error:
+        "Endpoint not found.",
+    });
+  }
+);
 
 // ======================================================
 // START SERVER
 // ======================================================
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("==============================================");
-  console.log("       STREAMBOX BACKEND v6.0.0");
-  console.log("==============================================");
-  console.log(`Port: ${PORT}`);
-  console.log(`Node: ${process.version}`);
-  console.log("yt-dlp: automatic detection");
-  console.log(`FFmpeg: ${getFfmpegCommand()}`);
-  console.log("==============================================");
-});
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      "=============================================="
+    );
+
+    console.log(
+      "       STREAMBOX BACKEND v7.0.0"
+    );
+
+    console.log(
+      "=============================================="
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      `Node: ${process.version}`
+    );
+
+    console.log(
+      `yt-dlp: ${
+        EXPLICIT_YTDLP_PATH ||
+        "/usr/local/bin/yt-dlp"
+      }`
+    );
+
+    console.log(
+      `FFmpeg: ${getFfmpegCommand()}`
+    );
+
+    console.log(
+      `Deno: ${DENO_PATH}`
+    );
+
+    console.log(
+      "=============================================="
+    );
+  }
+);
