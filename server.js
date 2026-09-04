@@ -600,141 +600,59 @@ async function runBtchExtractor(platform, url) {
 // YT-DLP HELPERS
 // ======================================================
 
-function getYtDlpCommand() {
-  return process.env.YTDLP_PATH || "yt-dlp";
-}
+async function withTimeout(
+  promise,
+  timeoutMs
+) {
 
-function getFfmpegCommand() {
-  return process.env.FFMPEG_PATH || "ffmpeg";
-}
+  let timer;
 
-function runCommand(command, args, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      shell: false,
-      windowsHide: true,
-    });
+  const timeout =
+    new Promise(
+      (_, reject) => {
 
-    let stdout = "";
-    let stderr = "";
-    let finished = false;
+        timer =
+          setTimeout(
+            () => {
 
-    const timer = setTimeout(() => {
-      if (finished) {
-        return;
+              reject(
+                new Error(
+                  `Extraction timed out after ${Math.round(timeoutMs / 1000)} seconds`
+                )
+              );
+
+            },
+            timeoutMs
+          );
       }
-
-      finished = true;
-
-      child.kill("SIGKILL");
-
-      reject(
-        new Error(
-          `${command} timed out after ${Math.round(
-            timeoutMs / 1000
-          )} seconds`
-        )
-      );
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error) => {
-      if (finished) {
-        return;
-      }
-
-      finished = true;
-      clearTimeout(timer);
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (finished) {
-        return;
-      }
-
-      finished = true;
-      clearTimeout(timer);
-
-      if (code !== 0) {
-        reject(
-          new Error(
-            stderr.trim() ||
-              `${command} exited with code ${code}`
-          )
-        );
-
-        return;
-      }
-
-      resolve({
-        stdout,
-        stderr,
-      });
-    });
-  });
-}
-
-async function checkCommand(command, args = ["--version"]) {
-  try {
-    const result = await runCommand(
-      command,
-      args,
-      15000
     );
 
-    return {
-      installed: true,
-      version: result.stdout.trim().split("\n")[0],
-    };
-  } catch (error) {
-    return {
-      installed: false,
-      version: null,
-      error: error.message,
-    };
+  try {
+
+    return await Promise.race([
+      promise,
+      timeout
+    ]);
+
+  } finally {
+
+    clearTimeout(timer);
   }
 }
 
-async function extractYouTubeWithYtDlp(url) {
-  console.log("[YTDLP] Extracting YouTube URL");
+// ======================================================
+// SAFE DEBUG RESULT
+// ======================================================
 
-  const args = [
-    "--dump-single-json",
-    "--no-playlist",
-    "--skip-download",
-    "--no-warnings",
-    "--ignore-config",
-    "--format",
-    "bv*[height<=1080]+ba/b[height<=1080]/b",
-    "--merge-output-format",
-    "mp4",
-    "--user-agent",
-    USER_AGENT,
-    url,
-  ];
+function makeSafeDebug(
+  result
+) {
 
-  const result = await runCommand(
-    getYtDlpCommand(),
-    args,
-    YTDLP_TIMEOUT
-  );
-
-  let metadata;
-
-  try {
-    metadata = JSON.parse(result.stdout);
-  } catch {
-    throw new Error(
-      "yt-dlp returned invalid JSON output"
-    );
+  if (
+    result === null ||
+    result === undefined
+  ) {
+    return null;
   }
 
   if (!metadata) {
@@ -943,78 +861,34 @@ function findFirstUrlByKeys(value, keys, depth = 0) {
 // ROUTES
 // ======================================================
 
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    service: "StreamBox Backend",
-    status: "online",
-    version: "4.0.0",
-    node: process.version,
-    timestamp: new Date().toISOString(),
-  });
-});
+app.post(
+  '/api/extract',
+  async (req, res) => {
 
-app.get("/api/health", (req, res) => {
-  res.json({
-    success: true,
-    service: "StreamBox Backend",
-    status: "online",
-    version: "4.0.0",
-    node: process.version,
-    timestamp: new Date().toISOString(),
-  });
-});
+    const started =
+      Date.now();
 
-app.get("/api/tools", async (req, res) => {
-  const ytDlp = await checkCommand(
-    getYtDlpCommand(),
-    ["--version"]
-  );
+    try {
 
-  const ffmpeg = await checkCommand(
-    getFfmpegCommand(),
-    ["-version"]
-  );
+      // ==================================================
+      // 1. Validate body
+      // ==================================================
 
-  res.json({
-    success: true,
-    node: process.version,
-    ytDlp,
-    ffmpeg,
-  });
-});
+      const body =
+        req.body || {};
 
-app.get("/api/extract", (req, res) => {
-  res.json({
-    success: true,
-    message: "Extract API is working.",
-    method: "POST",
-    endpoint: "/api/extract",
-    usage: {
-      body: {
-        url: "https://www.youtube.com/watch?v=example",
-      },
-    },
-  });
-});
+      const rawUrl =
+        body.url;
 
-// ======================================================
-// MAIN EXTRACT API
-// ======================================================
+      if (
+        !rawUrl
+      ) {
 
-app.post("/api/extract", async (req, res) => {
-  const started = Date.now();
-
-  try {
-    const rawUrl = req.body?.url;
-
-    if (!rawUrl) {
-      return res.status(400).json({
-        success: false,
-        code: "URL_REQUIRED",
-        error: "URL is required",
-      });
-    }
+        return res.status(400).json({
+          success: false,
+          error: 'URL is required'
+        });
+      }
 
     if (typeof rawUrl !== "string") {
       return res.status(400).json({
@@ -1215,22 +1089,71 @@ app.use((err, req, res, next) => {
 // START SERVER
 // ======================================================
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("");
-  console.log("================================================");
-  console.log("       STREAMBOX BACKEND v4.0.0");
-  console.log("================================================");
-  console.log(`Port: ${PORT}`);
-  console.log(`Node: ${process.version}`);
-  console.log(`yt-dlp: ${getYtDlpCommand()}`);
-  console.log(`FFmpeg: ${getFfmpegCommand()}`);
-  console.log("Supported platforms:");
-  console.log("✓ Instagram");
-  console.log("✓ TikTok");
-  console.log("✓ Facebook");
-  console.log("✓ Pinterest");
-  console.log("✓ Twitter/X");
-  console.log("✓ YouTube");
-  console.log("================================================");
-  console.log("");
-});
+app.listen(
+  PORT,
+  '0.0.0.0',
+  () => {
+
+    console.log('');
+    console.log(
+      '================================================'
+    );
+
+    console.log(
+      '       STREAMBOX BACKEND v3.0.0'
+    );
+
+    console.log(
+      '================================================'
+    );
+
+    console.log(
+      `Port: ${PORT}`
+    );
+
+    console.log(
+      `Node: ${process.version}`
+    );
+
+    console.log(
+      `Environment: ${
+        process.env.NODE_ENV ||
+        'production'
+      }`
+    );
+
+    console.log(
+      'Supported platforms:'
+    );
+
+    console.log(
+      '✓ Instagram'
+    );
+
+    console.log(
+      '✓ TikTok'
+    );
+
+    console.log(
+      '✓ Facebook'
+    );
+
+    console.log(
+      '✓ Pinterest'
+    );
+
+    console.log(
+      '✓ Twitter/X'
+    );
+
+    console.log(
+      '✓ YouTube'
+    );
+
+    console.log(
+      '================================================'
+    );
+
+    console.log('');
+  }
+);
