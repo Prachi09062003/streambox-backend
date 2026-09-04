@@ -1,49 +1,71 @@
-FROM node:22-bookworm
+FROM node:20-bookworm
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# ============================================================
+# SYSTEM PACKAGES
+# ============================================================
+
+RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     ca-certificates \
     python3 \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp
-RUN curl --fail --location --retry 5 \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
-    --output /usr/local/bin/yt-dlp && \
-    chmod 755 /usr/local/bin/yt-dlp
+# ============================================================
+# DENO
+# ============================================================
 
-# Install Deno for YouTube JavaScript extraction
 RUN curl -fsSL https://deno.land/install.sh | sh
 
-ENV DENO_INSTALL=/root/.deno
-ENV PATH="/root/.deno/bin:${PATH}"
+# ============================================================
+# YT-DLP
+# ============================================================
 
-# Verify required tools
-RUN echo "Checking yt-dlp..." && \
-    /usr/local/bin/yt-dlp --version && \
-    echo "Checking ffmpeg..." && \
-    /usr/bin/ffmpeg -version | head -n 1 && \
-    echo "Checking ffprobe..." && \
-    /usr/bin/ffprobe -version | head -n 1 && \
-    echo "Checking deno..." && \
-    /root/.deno/bin/deno --version
+RUN curl -L \
+    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux \
+    -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+ENV NODE_ENV=production
+
+ENV YTDLP_PATH=/usr/local/bin/yt-dlp
+
+ENV FFMPEG_PATH=/usr/bin/ffmpeg
+
+ENV DENO_INSTALL=/root/.deno
+
+ENV DENO_PATH=/root/.deno/bin/deno
+
+ENV PATH="/root/.deno/bin:/usr/local/bin:/usr/bin:${PATH}"
+
+ENV PORT=3000
+
+ENV MEDIA_TTL_SECONDS=1800
+
+# ============================================================
+# APP
+# ============================================================
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install --omit=dev
+
+RUN npm ci --omit=dev
 
 COPY . .
 
-ENV NODE_ENV=production
-ENV YTDLP_PATH=/usr/local/bin/yt-dlp
-ENV FFMPEG_PATH=/usr/bin/ffmpeg
-ENV DENO_PATH=/root/.deno/bin/deno
-ENV PORT=3000
+# ============================================================
+# PORT
+# ============================================================
 
 EXPOSE 3000
+
+# ============================================================
+# START
+# ============================================================
 
 CMD ["node", "server.js"]
