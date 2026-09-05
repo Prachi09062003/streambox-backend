@@ -16,7 +16,6 @@ const PORT = process.env.PORT || 3000;
 
 const EXTRACTION_TIMEOUT = 180000;
 const DOWNLOAD_TIMEOUT = 600000;
-const REDIRECT_TIMEOUT = 20000;
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -24,24 +23,33 @@ const USER_AGENT =
   "Chrome/131.0.0.0 Safari/537.36";
 
 const YTDLP_PATH =
-  process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
+  process.env.YTDLP_PATH ||
+  "/usr/local/bin/yt-dlp";
 
 const FFMPEG_PATH =
-  process.env.FFMPEG_PATH || "/usr/bin/ffmpeg";
+  process.env.FFMPEG_PATH ||
+  "/usr/bin/ffmpeg";
 
 const DENO_PATH =
-  process.env.DENO_PATH || "/root/.deno/bin/deno";
+  process.env.DENO_PATH ||
+  "/root/.deno/bin/deno";
 
 const MEDIA_DIR =
   process.env.MEDIA_DIR ||
   path.join(os.tmpdir(), "streambox-media");
 
 const MEDIA_TTL =
-  Number(process.env.MEDIA_TTL_SECONDS || 1800) * 1000;
+  Number(
+    process.env.MEDIA_TTL_SECONDS || 1800
+  ) * 1000;
 
 fs.mkdirSync(MEDIA_DIR, {
   recursive: true,
 });
+
+// Extraction sessions.
+// token -> metadata
+const extractionSessions = new Map();
 
 // ============================================================
 // MIDDLEWARE
@@ -85,17 +93,33 @@ function cleanInputUrl(value) {
 function normalizeUrl(value) {
   try {
     const url = new URL(value);
-
     url.hash = "";
-
     return url.toString();
   } catch {
     return value;
   }
 }
 
+function isYouTubeUrl(url) {
+  try {
+    const hostname =
+      new URL(url).hostname
+        .toLowerCase()
+        .replace(/^www\./, "");
+
+    return (
+      hostname === "youtube.com" ||
+      hostname.endsWith(".youtube.com") ||
+      hostname === "youtu.be" ||
+      hostname === "music.youtube.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
 // ============================================================
-// PLATFORM DETECTION
+// PLATFORM
 // ============================================================
 
 function getPlatform(url) {
@@ -137,12 +161,11 @@ function getPlatform(url) {
     return "twitter";
   }
 
-  // YouTube intentionally disabled.
-  return null;
+  return "generic";
 }
 
 // ============================================================
-// REDIRECT RESOLUTION
+// REDIRECT
 // ============================================================
 
 async function resolveRedirectUrl(inputUrl) {
@@ -153,19 +176,17 @@ async function resolveRedirectUrl(inputUrl) {
 
     const timer = setTimeout(() => {
       controller.abort();
-    }, REDIRECT_TIMEOUT);
+    }, 20000);
 
     try {
       const response = await fetch(currentUrl, {
         method: "GET",
         redirect: "manual",
-
         headers: {
           "User-Agent": USER_AGENT,
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
-
         signal: controller.signal,
       });
 
@@ -182,14 +203,11 @@ async function resolveRedirectUrl(inputUrl) {
           break;
         }
 
-        currentUrl = new URL(
-          location,
-          currentUrl
-        ).href;
-
-        console.log(
-          `[REDIRECT] ${i + 1}: ${currentUrl}`
-        );
+        currentUrl =
+          new URL(
+            location,
+            currentUrl
+          ).href;
 
         continue;
       }
@@ -204,11 +222,6 @@ async function resolveRedirectUrl(inputUrl) {
       break;
     } catch (error) {
       clearTimeout(timer);
-
-      console.log(
-        `[REDIRECT] Failed: ${error.message}`
-      );
-
       break;
     }
   }
@@ -217,88 +230,33 @@ async function resolveRedirectUrl(inputUrl) {
 }
 
 // ============================================================
-// URL PREPARATION
+// PREPARE URL
 // ============================================================
 
-async function prepareUrl(platform, inputUrl) {
+async function prepareUrl(
+  platform,
+  inputUrl
+) {
   let url = normalizeUrl(inputUrl);
 
-  // ----------------------------------------------------------
-  // PINTEREST
-  // ----------------------------------------------------------
-
-  if (platform === "pinterest") {
-    console.log(
-      "[PREPARE] Resolving Pinterest URL"
-    );
-
+  if (
+    platform === "pinterest" ||
+    platform === "tiktok" ||
+    platform === "facebook"
+  ) {
     const resolved =
       await resolveRedirectUrl(url);
 
     if (resolved) {
       url = resolved;
     }
-
-    console.log(
-      `[PREPARED] Pinterest: ${url}`
-    );
-
-    return url;
-  }
-
-  // ----------------------------------------------------------
-  // TIKTOK
-  // ----------------------------------------------------------
-
-  if (platform === "tiktok") {
-    if (
-      url.includes("vm.tiktok.com") ||
-      url.includes("vt.tiktok.com")
-    ) {
-      console.log(
-        "[PREPARE] Resolving TikTok short URL"
-      );
-
-      const resolved =
-        await resolveRedirectUrl(url);
-
-      if (resolved) {
-        url = resolved;
-      }
-    }
-
-    return url;
-  }
-
-  // ----------------------------------------------------------
-  // FACEBOOK
-  // ----------------------------------------------------------
-
-  if (platform === "facebook") {
-    if (
-      url.includes("fb.watch") ||
-      url.includes("/share/")
-    ) {
-      console.log(
-        "[PREPARE] Resolving Facebook URL"
-      );
-
-      const resolved =
-        await resolveRedirectUrl(url);
-
-      if (resolved) {
-        url = resolved;
-      }
-    }
-
-    return url;
   }
 
   return url;
 }
 
 // ============================================================
-// COMMAND RUNNER
+// COMMAND
 // ============================================================
 
 function runCommand(
@@ -312,26 +270,17 @@ function runCommand(
 
     const env = {
       ...process.env,
-
       PATH:
         `/root/.deno/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`,
     };
-
-    console.log("");
-
-    console.log(
-      `[COMMAND] ${command} ${args.join(" ")}`
-    );
 
     const child = spawn(
       command,
       args,
       {
         env,
-
         cwd:
           options.cwd || process.cwd(),
-
         windowsHide: true,
       }
     );
@@ -358,63 +307,48 @@ function runCommand(
       );
     }, timeout);
 
-    child.stdout.on(
-      "data",
-      (data) => {
-        stdout += data.toString();
-      }
-    );
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
 
-    child.stderr.on(
-      "data",
-      (data) => {
-        stderr += data.toString();
-      }
-    );
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
 
-    child.on(
-      "error",
-      (error) => {
-        if (finished) return;
+    child.on("error", (error) => {
+      if (finished) return;
 
-        finished = true;
+      finished = true;
+      clearTimeout(timer);
+      reject(error);
+    });
 
-        clearTimeout(timer);
+    child.on("close", (code) => {
+      if (finished) return;
+
+      finished = true;
+      clearTimeout(timer);
+
+      if (code === 0) {
+        resolve({
+          code,
+          stdout,
+          stderr,
+        });
+      } else {
+        const error = new Error(
+          stderr.trim() ||
+            stdout.trim() ||
+            `Command failed with code ${code}`
+        );
+
+        error.code = code;
+        error.stdout = stdout;
+        error.stderr = stderr;
 
         reject(error);
       }
-    );
-
-    child.on(
-      "close",
-      (code) => {
-        if (finished) return;
-
-        finished = true;
-
-        clearTimeout(timer);
-
-        if (code === 0) {
-          resolve({
-            code,
-            stdout,
-            stderr,
-          });
-        } else {
-          const error = new Error(
-            stderr.trim() ||
-              stdout.trim() ||
-              `Command failed with code ${code}`
-          );
-
-          error.code = code;
-          error.stdout = stdout;
-          error.stderr = stderr;
-
-          reject(error);
-        }
-      }
-    );
+    });
   });
 }
 
@@ -444,123 +378,89 @@ function getYtDlpPath() {
   return "yt-dlp";
 }
 
-// ============================================================
-// YT-DLP BASE ARGS
-// ============================================================
-
 function getCommonYtDlpArgs() {
   return [
     "--ignore-config",
     "--no-playlist",
     "--no-warnings",
     "--newline",
-
     "--retries",
     "5",
-
     "--fragment-retries",
     "5",
-
     "--extractor-retries",
     "5",
-
     "--retry-sleep",
     "1",
-
     "--user-agent",
     USER_AGENT,
   ];
 }
 
 // ============================================================
-// EXTRACT METADATA
+// METADATA
 // ============================================================
 
-async function extractMetadata(
-  url,
-  platform
-) {
-  const ytDlp = getYtDlpPath();
+async function extractMetadata(url) {
+  const ytDlp =
+    getYtDlpPath();
 
   const args = [
     ...getCommonYtDlpArgs(),
-
     "--dump-single-json",
     "--skip-download",
-
-    "--format-sort",
-    "res:1080",
-
-    "--referer",
-    url,
-
     url,
   ];
 
-  try {
-    const result =
-      await runCommand(
-        ytDlp,
-        args,
-        {
-          timeout:
-            EXTRACTION_TIMEOUT,
-        }
-      );
-
-    const stdout =
-      result.stdout.trim();
-
-    if (!stdout) {
-      throw new Error(
-        "yt-dlp returned empty metadata"
-      );
-    }
-
-    const lines =
-      stdout
-        .split(/\r?\n/)
-        .filter(Boolean);
-
-    let json = null;
-
-    for (
-      let i = lines.length - 1;
-      i >= 0;
-      i--
-    ) {
-      try {
-        const parsed =
-          JSON.parse(lines[i]);
-
-        if (
-          parsed &&
-          typeof parsed === "object"
-        ) {
-          json = parsed;
-          break;
-        }
-      } catch {}
-    }
-
-    if (!json) {
-      throw new Error(
-        "Could not parse yt-dlp metadata"
-      );
-    }
-
-    return json;
-  } catch (error) {
-    console.log(
-      `[YTDLP] ${platform} metadata failed: ${error.message}`
+  const result =
+    await runCommand(
+      ytDlp,
+      args,
+      {
+        timeout:
+          EXTRACTION_TIMEOUT,
+      }
     );
 
-    throw error;
+  const stdout =
+    result.stdout.trim();
+
+  if (!stdout) {
+    throw new Error(
+      "yt-dlp returned empty metadata."
+    );
   }
+
+  const lines =
+    stdout
+      .split(/\r?\n/)
+      .filter(Boolean);
+
+  for (
+    let i = lines.length - 1;
+    i >= 0;
+    i--
+  ) {
+    try {
+      const parsed =
+        JSON.parse(lines[i]);
+
+      if (
+        parsed &&
+        typeof parsed === "object"
+      ) {
+        return parsed;
+      }
+    } catch {}
+  }
+
+  throw new Error(
+    "Could not parse yt-dlp metadata."
+  );
 }
 
 // ============================================================
-// FORMAT INFORMATION
+// FORMAT HELPERS
 // ============================================================
 
 function isHttpUrl(value) {
@@ -570,7 +470,63 @@ function isHttpUrl(value) {
   );
 }
 
-function getFormats(metadata) {
+function hasVideo(format) {
+  const codec =
+    String(
+      format?.vcodec || ""
+    ).toLowerCase();
+
+  return (
+    codec &&
+    codec !== "none"
+  );
+}
+
+function hasAudio(format) {
+  const codec =
+    String(
+      format?.acodec || ""
+    ).toLowerCase();
+
+  return (
+    codec &&
+    codec !== "none"
+  );
+}
+
+function formatHeight(format) {
+  const height =
+    Number(format?.height || 0);
+
+  return Number.isFinite(height)
+    ? height
+    : 0;
+}
+
+function formatLabel(format) {
+  const height =
+    formatHeight(format);
+
+  if (height > 0) {
+    return `${height}p`;
+  }
+
+  if (
+    format?.format_note
+  ) {
+    return String(
+      format.format_note
+    );
+  }
+
+  return "Best";
+}
+
+// ============================================================
+// BUILD QUALITY LIST
+// ============================================================
+
+function buildQualityList(metadata) {
   if (
     !metadata ||
     !Array.isArray(metadata.formats)
@@ -578,140 +534,278 @@ function getFormats(metadata) {
     return [];
   }
 
-  return metadata.formats.filter(
-    (format) =>
-      format &&
-      isHttpUrl(format.url)
-  );
-}
+  const formats =
+    metadata.formats.filter(
+      (format) =>
+        format &&
+        hasVideo(format)
+    );
 
-// ============================================================
-// FORMAT SCORING
-// ============================================================
+  // Prefer formats containing audio.
+  // Then prefer MP4.
+  // Then higher resolution.
+  formats.sort((a, b) => {
+    const audioA =
+      hasAudio(a) ? 1 : 0;
 
-function scoreFormat(format) {
-  let score = 0;
+    const audioB =
+      hasAudio(b) ? 1 : 0;
 
-  const ext =
-    String(format.ext || "")
-      .toLowerCase();
+    if (audioA !== audioB) {
+      return audioB - audioA;
+    }
 
-  const protocol =
-    String(format.protocol || "")
-      .toLowerCase();
+    const mp4A =
+      String(a.ext || "")
+        .toLowerCase() === "mp4"
+        ? 1
+        : 0;
 
-  const vcodec =
-    String(format.vcodec || "")
-      .toLowerCase();
+    const mp4B =
+      String(b.ext || "")
+        .toLowerCase() === "mp4"
+        ? 1
+        : 0;
 
-  const acodec =
-    String(format.acodec || "")
-      .toLowerCase();
+    if (mp4A !== mp4B) {
+      return mp4B - mp4A;
+    }
 
-  const height =
-    Number(format.height || 0);
+    return (
+      formatHeight(b) -
+      formatHeight(a)
+    );
+  });
 
-  const fps =
-    Number(format.fps || 0);
+  // Group by height.
+  // Keep the best candidate for each resolution.
+  const byHeight =
+    new Map();
+
+  for (const format of formats) {
+    const height =
+      formatHeight(format);
+
+    if (height <= 0) {
+      continue;
+    }
+
+    const current =
+      byHeight.get(height);
+
+    if (!current) {
+      byHeight.set(
+        height,
+        format
+      );
+      continue;
+    }
+
+    const currentScore =
+      formatScore(current);
+
+    const newScore =
+      formatScore(format);
+
+    if (
+      newScore >
+      currentScore
+    ) {
+      byHeight.set(
+        height,
+        format
+      );
+    }
+  }
+
+  const result = [];
+
+  const sortedHeights =
+    Array.from(
+      byHeight.keys()
+    ).sort((a, b) => b - a);
+
+  for (
+    const height of sortedHeights
+  ) {
+    const format =
+      byHeight.get(height);
+
+    if (!format) continue;
+
+    result.push({
+      id:
+        String(format.format_id),
+      label:
+        formatLabel(format),
+      height,
+      width:
+        Number(format.width || 0) ||
+        null,
+      extension:
+        format.ext || "mp4",
+      previewUrl:
+        isHttpUrl(format.url)
+          ? format.url
+          : null,
+      hasAudio:
+        hasAudio(format),
+      hasVideo:
+        hasVideo(format),
+      formatNote:
+        format.format_note ||
+        null,
+    });
+  }
+
+  // Best combined format first.
+  const combined =
+    formats.find(
+      (format) =>
+        hasVideo(format) &&
+        hasAudio(format) &&
+        formatHeight(format) > 0
+    );
 
   if (
-    vcodec &&
-    vcodec !== "none"
+    combined &&
+    !result.some(
+      (item) =>
+        item.id ===
+        String(combined.format_id)
+    )
   ) {
+    result.unshift({
+      id:
+        String(combined.format_id),
+      label:
+        `${formatLabel(combined)} • Audio`,
+      height:
+        formatHeight(combined),
+      width:
+        Number(combined.width || 0) ||
+        null,
+      extension:
+        combined.ext || "mp4",
+      previewUrl:
+        isHttpUrl(combined.url)
+          ? combined.url
+          : null,
+      hasAudio: true,
+      hasVideo: true,
+      formatNote:
+        combined.format_note ||
+        null,
+    });
+  }
+
+  return result;
+}
+
+function formatScore(format) {
+  let score = 0;
+
+  if (hasVideo(format)) {
     score += 1000;
   }
 
-  if (
-    acodec &&
-    acodec !== "none"
-  ) {
+  if (hasAudio(format)) {
     score += 500;
   }
 
-  if (ext === "mp4") {
+  if (
+    String(format.ext || "")
+      .toLowerCase() === "mp4"
+  ) {
     score += 400;
   }
 
-  if (
-    protocol.includes("m3u8") ||
-    protocol.includes("dash")
-  ) {
-    score -= 200;
-  }
-
   score += Math.min(
-    height,
+    formatHeight(format),
     2160
   );
-
-  score += Math.min(
-    fps * 2,
-    120
-  );
-
-  if (height > 1080) {
-    score -=
-      (height - 1080) * 0.5;
-  }
 
   return score;
 }
 
 // ============================================================
-// SELECT FORMAT
+// TOKEN
 // ============================================================
 
-function selectBestFormat(metadata) {
-  const formats =
-    getFormats(metadata);
-
-  if (formats.length === 0) {
-    return null;
-  }
-
-  const videoFormats =
-    formats.filter(
-      (format) => {
-        const vcodec =
-          String(
-            format.vcodec || ""
-          ).toLowerCase();
-
-        return (
-          vcodec &&
-          vcodec !== "none"
-        );
-      }
-    );
-
-  const candidates =
-    videoFormats.length > 0
-      ? videoFormats
-      : formats;
-
-  candidates.sort(
-    (a, b) =>
-      scoreFormat(b) -
-      scoreFormat(a)
-  );
-
-  return candidates[0];
+function createToken() {
+  return crypto
+    .randomBytes(24)
+    .toString("hex");
 }
 
 // ============================================================
-// SERVER-SIDE DOWNLOAD
+// EXTRACT SESSION
 // ============================================================
 
-async function downloadWithYtDlp(
-  url,
-  platform,
-  outputDir
+function createExtractionSession(data) {
+  const token =
+    createToken();
+
+  extractionSessions.set(
+    token,
+    {
+      ...data,
+      createdAt: Date.now(),
+    }
+  );
+
+  return token;
+}
+
+function getExtractionSession(token) {
+  if (
+    !token ||
+    !/^[a-f0-9]{48}$/i.test(token)
+  ) {
+    return null;
+  }
+
+  const session =
+    extractionSessions.get(token);
+
+  if (!session) {
+    return null;
+  }
+
+  if (
+    Date.now() -
+      session.createdAt >
+    MEDIA_TTL
+  ) {
+    extractionSessions.delete(
+      token
+    );
+
+    return null;
+  }
+
+  return session;
+}
+
+// ============================================================
+// SERVER DOWNLOAD
+// ============================================================
+
+async function downloadSelectedFormat(
+  session,
+  formatId
 ) {
-  const ytDlp =
-    getYtDlpPath();
+  const jobToken =
+    createToken();
+
+  const jobDir =
+    path.join(
+      MEDIA_DIR,
+      jobToken
+    );
 
   fs.mkdirSync(
-    outputDir,
+    jobDir,
     {
       recursive: true,
     }
@@ -719,15 +813,26 @@ async function downloadWithYtDlp(
 
   const outputTemplate =
     path.join(
-      outputDir,
+      jobDir,
       "streambox.%(ext)s"
     );
+
+  const ytDlp =
+    getYtDlpPath();
+
+  // Use requested format when possible.
+  //
+  // If it is video-only, add best available
+  // audio. If it already contains audio,
+  // yt-dlp will keep it.
+  const formatSelector =
+    `${formatId}+bestaudio/best`;
 
   const args = [
     ...getCommonYtDlpArgs(),
 
     "--format",
-    "bv*+ba/b",
+    formatSelector,
 
     "--merge-output-format",
     "mp4",
@@ -737,48 +842,102 @@ async function downloadWithYtDlp(
 
     "--no-part",
     "--no-continue",
-    "--newline",
 
     "--referer",
-    url,
+    session.sourceUrl,
 
-    url,
+    session.sourceUrl,
   ];
 
   try {
-    const result =
-      await runCommand(
-        ytDlp,
-        args,
-        {
-          timeout:
-            DOWNLOAD_TIMEOUT,
+    await runCommand(
+      ytDlp,
+      args,
+      {
+        timeout:
+          DOWNLOAD_TIMEOUT,
+        cwd:
+          jobDir,
+      }
+    );
 
-          cwd:
-            outputDir,
-        }
+    const downloadedFile =
+      findDownloadedFile(
+        jobDir
       );
 
-    console.log(
-      `[DOWNLOAD] ${platform} completed`
-    );
+    if (!downloadedFile) {
+      throw new Error(
+        "yt-dlp completed but no media file was created."
+      );
+    }
 
-    return result;
+    let finalFile =
+      downloadedFile;
+
+    if (
+      !downloadedFile
+        .toLowerCase()
+        .endsWith(".mp4")
+    ) {
+      finalFile =
+        path.join(
+          jobDir,
+          "streambox.mp4"
+        );
+
+      await normalizeToMp4(
+        downloadedFile,
+        finalFile
+      );
+    }
+
+    if (
+      !fs.existsSync(
+        finalFile
+      )
+    ) {
+      throw new Error(
+        "Final MP4 file was not created."
+      );
+    }
+
+    const stat =
+      fs.statSync(
+        finalFile
+      );
+
+    if (stat.size <= 0) {
+      throw new Error(
+        "Final video is empty."
+      );
+    }
+
+    return {
+      jobToken,
+      jobDir,
+      filePath:
+        finalFile,
+      fileSize:
+        stat.size,
+    };
   } catch (error) {
-    console.log(
-      `[DOWNLOAD] ${platform} failed`
-    );
-
-    console.log(
-      error.message
-    );
+    try {
+      fs.rmSync(
+        jobDir,
+        {
+          recursive: true,
+          force: true,
+        }
+      );
+    } catch {}
 
     throw error;
   }
 }
 
 // ============================================================
-// FIND DOWNLOADED FILE
+// FIND FILE
 // ============================================================
 
 function findDownloadedFile(
@@ -790,23 +949,19 @@ function findDownloadedFile(
     return null;
   }
 
-  const files =
-    fs.readdirSync(
-      directory
-    );
-
-  const mediaExtensions = [
+  const extensions = [
     ".mp4",
     ".mkv",
     ".webm",
     ".mov",
     ".m4v",
+    ".ts",
   ];
 
   const candidates =
-    files
+    fs.readdirSync(directory)
       .filter((file) =>
-        mediaExtensions.some(
+        extensions.some(
           (ext) =>
             file
               .toLowerCase()
@@ -815,7 +970,6 @@ function findDownloadedFile(
       )
       .map((file) => ({
         file,
-
         fullPath:
           path.join(
             directory,
@@ -841,36 +995,26 @@ function findDownloadedFile(
   }
 
   candidates.sort(
-    (a, b) => {
-      const aSize =
-        fs.statSync(
-          a.fullPath
-        ).size;
-
-      const bSize =
-        fs.statSync(
-          b.fullPath
-        ).size;
-
-      return bSize - aSize;
-    }
+    (a, b) =>
+      fs.statSync(
+        b.fullPath
+      ).size -
+      fs.statSync(
+        a.fullPath
+      ).size
   );
 
   return candidates[0].fullPath;
 }
 
 // ============================================================
-// FFMPEG NORMALIZATION
+// FFMPEG
 // ============================================================
 
 async function normalizeToMp4(
   inputFile,
   outputFile
 ) {
-  console.log(
-    `[FFMPEG] Normalizing: ${inputFile}`
-  );
-
   const args = [
     "-y",
 
@@ -917,207 +1061,26 @@ async function normalizeToMp4(
   );
 
   if (
-    !fs.existsSync(outputFile)
+    !fs.existsSync(
+      outputFile
+    )
   ) {
     throw new Error(
-      "FFmpeg did not create the MP4 file"
+      "FFmpeg did not create the MP4."
     );
   }
 
-  const size =
+  if (
     fs.statSync(
       outputFile
-    ).size;
-
-  if (size <= 0) {
+    ).size <= 0
+  ) {
     throw new Error(
-      "FFmpeg created an empty MP4"
+      "FFmpeg created an empty MP4."
     );
   }
-
-  console.log(
-    `[FFMPEG] MP4 ready: ${size} bytes`
-  );
 
   return outputFile;
-}
-
-// ============================================================
-// MEDIA TOKEN
-// ============================================================
-
-function createMediaToken() {
-  return crypto
-    .randomBytes(24)
-    .toString("hex");
-}
-
-// ============================================================
-// MEDIA JOB
-// ============================================================
-
-async function createMediaJob(
-  url,
-  platform
-) {
-  const token =
-    createMediaToken();
-
-  const jobDir =
-    path.join(
-      MEDIA_DIR,
-      token
-    );
-
-  fs.mkdirSync(
-    jobDir,
-    {
-      recursive: true,
-    }
-  );
-
-  try {
-    console.log("");
-
-    console.log(
-      `[JOB] ${token}`
-    );
-
-    await downloadWithYtDlp(
-      url,
-      platform,
-      jobDir
-    );
-
-    const downloadedFile =
-      findDownloadedFile(
-        jobDir
-      );
-
-    if (!downloadedFile) {
-      throw new Error(
-        "yt-dlp completed but no media file was created"
-      );
-    }
-
-    const finalFile =
-      path.join(
-        jobDir,
-        "streambox.mp4"
-      );
-
-    if (
-      downloadedFile
-        .toLowerCase()
-        .endsWith(".mp4")
-    ) {
-      if (
-        downloadedFile !== finalFile
-      ) {
-        fs.renameSync(
-          downloadedFile,
-          finalFile
-        );
-      }
-    } else {
-      await normalizeToMp4(
-        downloadedFile,
-        finalFile
-      );
-    }
-
-    if (
-      !fs.existsSync(finalFile)
-    ) {
-      throw new Error(
-        "Final media file does not exist"
-      );
-    }
-
-    const stat =
-      fs.statSync(
-        finalFile
-      );
-
-    if (stat.size <= 0) {
-      throw new Error(
-        "Final media file is empty"
-      );
-    }
-
-    // Metadata is optional.
-    let metadata = null;
-
-    try {
-      metadata =
-        await extractMetadata(
-          url,
-          platform
-        );
-
-      fs.writeFileSync(
-        path.join(
-          jobDir,
-          "metadata.json"
-        ),
-        JSON.stringify(
-          metadata,
-          null,
-          2
-        )
-      );
-    } catch (error) {
-      console.log(
-        `[METADATA] Optional metadata extraction failed: ${error.message}`
-      );
-    }
-
-    console.log(
-      `[JOB] Completed ${token}`
-    );
-
-    return {
-      token,
-
-      filePath:
-        finalFile,
-
-      fileSize:
-        stat.size,
-
-      title:
-        metadata?.title ||
-        "StreamBox Video",
-
-      thumbnail:
-        metadata?.thumbnail ||
-        null,
-
-      duration:
-        metadata?.duration ||
-        null,
-
-      width:
-        metadata?.width ||
-        null,
-
-      height:
-        metadata?.height ||
-        null,
-    };
-  } catch (error) {
-    try {
-      fs.rmSync(
-        jobDir,
-        {
-          recursive: true,
-          force: true,
-        }
-      );
-    } catch {}
-
-    throw error;
-  }
 }
 
 // ============================================================
@@ -1126,62 +1089,67 @@ async function createMediaJob(
 
 function cleanupExpiredMedia() {
   if (
-    !fs.existsSync(
-      MEDIA_DIR
-    )
+    fs.existsSync(MEDIA_DIR)
   ) {
-    return;
+    const now =
+      Date.now();
+
+    for (
+      const entry of fs.readdirSync(
+        MEDIA_DIR,
+        {
+          withFileTypes: true,
+        }
+      )
+    ) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const directory =
+        path.join(
+          MEDIA_DIR,
+          entry.name
+        );
+
+      try {
+        const stat =
+          fs.statSync(
+            directory
+          );
+
+        if (
+          now -
+            stat.mtimeMs >
+          MEDIA_TTL
+        ) {
+          fs.rmSync(
+            directory,
+            {
+              recursive: true,
+              force: true,
+            }
+          );
+        }
+      } catch {}
+    }
   }
 
-  const now =
-    Date.now();
-
-  const entries =
-    fs.readdirSync(
-      MEDIA_DIR,
-      {
-        withFileTypes: true,
-      }
-    );
-
   for (
-    const entry of entries
+    const [
+      token,
+      session,
+    ] of extractionSessions
   ) {
     if (
-      !entry.isDirectory()
+      Date.now() -
+        session.createdAt >
+      MEDIA_TTL
     ) {
-      continue;
-    }
-
-    const directory =
-      path.join(
-        MEDIA_DIR,
-        entry.name
+      extractionSessions.delete(
+        token
       );
-
-    try {
-      const stat =
-        fs.statSync(
-          directory
-        );
-
-      if (
-        now - stat.mtimeMs >
-        MEDIA_TTL
-      ) {
-        fs.rmSync(
-          directory,
-          {
-            recursive: true,
-            force: true,
-          }
-        );
-
-        console.log(
-          `[CLEANUP] Removed ${entry.name}`
-        );
-      }
-    } catch {}
+    }
   }
 }
 
@@ -1194,43 +1162,23 @@ setInterval(
 // ROOT
 // ============================================================
 
-app.get(
-  "/",
-  (req, res) => {
-    res.json({
-      success: true,
-
-      service:
-        "StreamBox Backend",
-
-      status:
-        "online",
-
-      version:
-        "10.0.0",
-
-      architecture:
-        "yt-dlp + FFmpeg + temporary MP4",
-
-      platforms: [
-        "instagram",
-        "tiktok",
-        "facebook",
-        "pinterest",
-        "twitter",
-      ],
-
-      youtube:
-        "temporarily disabled",
-
-      instagramProfilePictures:
-        "disabled",
-
-      timestamp:
-        new Date().toISOString(),
-    });
-  }
-);
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    service:
+      "StreamBox Backend",
+    status: "online",
+    version: "11.0.0",
+    architecture:
+      "yt-dlp + FFmpeg + quality selection",
+    youtube:
+      "disabled",
+    genericLinks:
+      "yt-dlp supported public URLs",
+    timestamp:
+      new Date().toISOString(),
+  });
+});
 
 // ============================================================
 // HEALTH
@@ -1241,144 +1189,13 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
-
-      status:
-        "online",
-
+      status: "online",
       service:
         "StreamBox Backend",
-
-      version:
-        "10.0.0",
-
+      version: "11.0.0",
       timestamp:
         new Date().toISOString(),
     });
-  }
-);
-
-// ============================================================
-// TOOLS
-// ============================================================
-
-app.get(
-  "/api/tools",
-  async (req, res) => {
-    const result = {
-      success: true,
-
-      ytDlp: {
-        path:
-          getYtDlpPath(),
-
-        installed:
-          fs.existsSync(
-            getYtDlpPath()
-          ),
-      },
-
-      ffmpeg: {
-        path:
-          FFMPEG_PATH,
-
-        installed:
-          fs.existsSync(
-            FFMPEG_PATH
-          ),
-      },
-
-      deno: {
-        path:
-          DENO_PATH,
-
-        installed:
-          fs.existsSync(
-            DENO_PATH
-          ),
-      },
-
-      mediaDirectory:
-        MEDIA_DIR,
-
-      timestamp:
-        new Date().toISOString(),
-    };
-
-    // --------------------------------------------------------
-    // YT-DLP VERSION
-    // --------------------------------------------------------
-
-    try {
-      const version =
-        await runCommand(
-          getYtDlpPath(),
-          ["--version"],
-          {
-            timeout: 15000,
-          }
-        );
-
-      result.ytDlp.version =
-        version.stdout.trim();
-    } catch (error) {
-      result.ytDlp.version =
-        null;
-
-      result.ytDlp.error =
-        error.message;
-    }
-
-    // --------------------------------------------------------
-    // FFMPEG VERSION
-    // --------------------------------------------------------
-
-    try {
-      const ffmpeg =
-        await runCommand(
-          FFMPEG_PATH,
-          ["-version"],
-          {
-            timeout: 15000,
-          }
-        );
-
-      result.ffmpeg.version =
-        ffmpeg.stdout
-          .split(/\r?\n/)[0];
-    } catch (error) {
-      result.ffmpeg.version =
-        null;
-
-      result.ffmpeg.error =
-        error.message;
-    }
-
-    // --------------------------------------------------------
-    // DENO VERSION
-    // --------------------------------------------------------
-
-    try {
-      const deno =
-        await runCommand(
-          DENO_PATH,
-          ["--version"],
-          {
-            timeout: 15000,
-          }
-        );
-
-      result.deno.version =
-        deno.stdout
-          .split(/\r?\n/)[0];
-    } catch (error) {
-      result.deno.version =
-        null;
-
-      result.deno.error =
-        error.message;
-    }
-
-    res.json(result);
   }
 );
 
@@ -1391,20 +1208,14 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
-
       message:
-        "Use POST /api/extract",
-
-      body: {
-        url:
-          "https://www.instagram.com/reel/example/",
-      },
+        "Use POST /api/extract with { url }",
     });
   }
 );
 
 // ============================================================
-// MAIN EXTRACT
+// EXTRACT
 // ============================================================
 
 app.post(
@@ -1422,7 +1233,6 @@ app.post(
       if (!inputUrl) {
         return res.status(400).json({
           success: false,
-
           error:
             "Please provide a video URL.",
         });
@@ -1435,47 +1245,50 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-
           error:
             "Invalid URL.",
         });
       }
 
-      const platform =
+      if (
+        isYouTubeUrl(
+          inputUrl
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "YouTube downloads are not supported by StreamBox.",
+        });
+      }
+
+      let platform =
         getPlatform(
           inputUrl
         );
 
-      if (!platform) {
+      const preparedUrl =
+        await prepareUrl(
+          platform,
+          inputUrl
+        );
+
+      if (
+        isYouTubeUrl(
+          preparedUrl
+        )
+      ) {
         return res.status(400).json({
           success: false,
-
           error:
-            "Unsupported platform.",
+            "YouTube downloads are not supported by StreamBox.",
         });
       }
 
-      console.log("");
-
-      console.log(
-        "============================================================"
-      );
-
-      console.log(
-        `[REQUEST] ${inputUrl}`
-      );
-
-      console.log(
-        `[PLATFORM] ${platform}`
-      );
-
-      // ------------------------------------------------------
-      // Instagram profile URLs are no longer supported
-      // because Instagram DP downloader has been removed.
-      // ------------------------------------------------------
-
+      // Instagram profile protection.
       if (
-        platform === "instagram"
+        platform ===
+        "instagram"
       ) {
         try {
           const parsed =
@@ -1486,31 +1299,32 @@ app.post(
               .split("/")
               .filter(Boolean);
 
-          const blockedProfilePaths = new Set([
-            "accounts",
-            "about",
-            "explore",
-            "direct",
-            "reels",
-            "reel",
-            "p",
-            "tv",
-            "stories",
-            "web",
-            "developer",
-            "privacy",
-            "terms",
-          ]);
+          const blocked =
+            new Set([
+              "accounts",
+              "about",
+              "explore",
+              "direct",
+              "reels",
+              "reel",
+              "p",
+              "tv",
+              "stories",
+              "web",
+              "developer",
+              "privacy",
+              "terms",
+            ]);
 
           if (
             segments.length === 1 &&
-            !blockedProfilePaths.has(
-              segments[0].toLowerCase()
+            !blocked.has(
+              segments[0]
+                .toLowerCase()
             )
           ) {
             return res.status(400).json({
               success: false,
-
               error:
                 "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
             });
@@ -1518,183 +1332,190 @@ app.post(
         } catch {}
       }
 
-      // ------------------------------------------------------
-      // PREPARE URL
-      // ------------------------------------------------------
-
-      const preparedUrl =
-        await prepareUrl(
-          platform,
-          inputUrl
-        );
-
       console.log(
-        `[PREPARED] ${preparedUrl}`
+        `[EXTRACT] ${preparedUrl}`
       );
 
-      // ------------------------------------------------------
-      // CREATE DOWNLOAD JOB
-      // ------------------------------------------------------
-
-      const job =
-        await createMediaJob(
-          preparedUrl,
-          platform
+      const metadata =
+        await extractMetadata(
+          preparedUrl
         );
+
+      const qualities =
+        buildQualityList(
+          metadata
+        );
+
+      if (
+        qualities.length === 0
+      ) {
+        throw new Error(
+          "No downloadable video qualities were found for this URL."
+        );
+      }
+
+      // Limit the number of qualities
+      // returned to Flutter.
+      const limitedQualities =
+        qualities
+          .slice(0, 8);
+
+      const token =
+        createExtractionSession({
+          sourceUrl:
+            preparedUrl,
+          originalUrl:
+            inputUrl,
+          platform,
+          metadata,
+          qualities:
+            limitedQualities,
+        });
+
+      const best =
+        limitedQualities[0];
 
       const processingTimeMs =
         Date.now() -
         started;
 
-      const baseUrl =
-        `${req.protocol}://${req.get("host")}`;
-
-      const mediaUrl =
-        `${baseUrl}/api/media/${job.token}`;
-
-      console.log(
-        `[SUCCESS] ${platform} completed in ${processingTimeMs}ms`
-      );
-
-      console.log(
-        `[MEDIA] ${mediaUrl}`
-      );
-
-      console.log(
-        "============================================================"
-      );
-
-      return res.status(200).json({
+      return res.json({
         success: true,
 
+        token,
+
         platform,
-
-        mediaUrl,
-
-        downloadUrl:
-          mediaUrl,
 
         sourceUrl:
           inputUrl,
 
         preparedUrl,
 
-        extension:
-          "mp4",
-
-        mimeType:
-          "video/mp4",
-
-        resolution:
-          job.height
-            ? `${job.height}p`
-            : null,
-
-        width:
-          job.width,
-
-        height:
-          job.height,
-
         title:
-          job.title,
+          metadata.title ||
+          "StreamBox Video",
 
         thumbnail:
-          job.thumbnail,
+          metadata.thumbnail ||
+          null,
 
         duration:
-          job.duration,
+          metadata.duration ||
+          null,
 
-        fileSize:
-          job.fileSize,
+        width:
+          metadata.width ||
+          null,
+
+        height:
+          metadata.height ||
+          null,
+
+        previewUrl:
+          best?.previewUrl ||
+          null,
+
+        qualities:
+          limitedQualities,
+
+        formats:
+          limitedQualities,
 
         processingTimeMs,
       });
     } catch (error) {
-      const processingTimeMs =
-        Date.now() -
-        started;
-
-      console.error("");
-
       console.error(
-        "[EXTRACTION ERROR]"
-      );
-
-      console.error(
+        "[EXTRACT ERROR]",
         error?.message ||
           error
       );
 
-      console.error(
-        "============================================================"
-      );
-
       return res.status(500).json({
         success: false,
-
         error:
-          error?.message ||
-          "Unable to download media.",
-
-        processingTimeMs,
+          friendlyYtDlpError(
+            error
+          ),
+        processingTimeMs:
+          Date.now() -
+          started,
       });
     }
   }
 );
 
 // ============================================================
-// MEDIA STREAM
+// DOWNLOAD SELECTED QUALITY
 // ============================================================
 
-app.get(
-  "/api/media/:token",
-  (req, res) => {
+app.post(
+  "/api/download",
+  async (req, res) => {
     try {
       const token =
-        req.params.token;
+        req.body?.token
+          ?.toString()
+          .trim();
 
-      if (
-        !/^[a-f0-9]{48}$/i.test(
-          token
-        )
-      ) {
+      const formatId =
+        req.body?.formatId
+          ?.toString()
+          .trim();
+
+      if (!token) {
         return res.status(400).json({
           success: false,
-
           error:
-            "Invalid media token.",
+            "Download session is missing.",
         });
       }
 
-      const jobDir =
-        path.join(
-          MEDIA_DIR,
+      if (!formatId) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Video quality is missing.",
+        });
+      }
+
+      const session =
+        getExtractionSession(
           token
         );
 
-      const filePath =
-        path.join(
-          jobDir,
-          "streambox.mp4"
-        );
-
-      if (
-        !fs.existsSync(
-          filePath
-        )
-      ) {
+      if (!session) {
         return res.status(404).json({
           success: false,
-
           error:
-            "Media expired or no longer available.",
+            "Download session expired. Please extract the URL again.",
         });
       }
 
-      const stat =
-        fs.statSync(
-          filePath
+      const allowed =
+        session.qualities.some(
+          (quality) =>
+            String(
+              quality.id
+            ) ===
+            String(formatId)
+        );
+
+      if (!allowed) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Selected video quality is no longer available.",
+        });
+      }
+
+      console.log(
+        `[DOWNLOAD] ${session.platform} ${formatId}`
+      );
+
+      const job =
+        await downloadSelectedFormat(
+          session,
+          formatId
         );
 
       res.setHeader(
@@ -1704,17 +1525,7 @@ app.get(
 
       res.setHeader(
         "Content-Length",
-        stat.size
-      );
-
-      res.setHeader(
-        "Accept-Ranges",
-        "bytes"
-      );
-
-      res.setHeader(
-        "Cache-Control",
-        "private, max-age=300"
+        job.fileSize
       );
 
       res.setHeader(
@@ -1722,90 +1533,55 @@ app.get(
         'attachment; filename="StreamBox.mp4"'
       );
 
-      // ------------------------------------------------------
-      // RANGE REQUEST
-      // ------------------------------------------------------
+      res.setHeader(
+        "Cache-Control",
+        "no-store"
+      );
 
-      const range =
-        req.headers.range;
+      const stream =
+        fs.createReadStream(
+          job.filePath
+        );
 
-      if (range) {
-        const parts =
-          range
-            .replace(
-              /bytes=/,
-              ""
-            )
-            .split("-");
-
-        const start =
-          parseInt(
-            parts[0],
-            10
+      stream.on(
+        "error",
+        (error) => {
+          console.error(
+            "[STREAM ERROR]",
+            error
           );
 
-        const end =
-          parts[1]
-            ? parseInt(
-                parts[1],
-                10
-              )
-            : stat.size - 1;
-
-        if (
-          Number.isNaN(start) ||
-          start < 0 ||
-          start >= stat.size
-        ) {
-          return res
-            .status(416)
-            .end();
+          if (
+            !res.headersSent
+          ) {
+            res.status(500).end();
+          }
         }
+      );
 
-        const safeEnd =
-          Math.min(
-            end,
-            stat.size - 1
-          );
+      stream.on(
+        "close",
+        () => {
+          setTimeout(() => {
+            try {
+              fs.rmSync(
+                job.jobDir,
+                {
+                  recursive: true,
+                  force: true,
+                }
+              );
+            } catch {}
+          }, 5000);
+        }
+      );
 
-        const chunkSize =
-          safeEnd -
-          start +
-          1;
-
-        res.status(206);
-
-        res.setHeader(
-          "Content-Range",
-          `bytes ${start}-${safeEnd}/${stat.size}`
-        );
-
-        res.setHeader(
-          "Content-Length",
-          chunkSize
-        );
-
-        const stream =
-          fs.createReadStream(
-            filePath,
-            {
-              start,
-              end: safeEnd,
-            }
-          );
-
-        stream.pipe(res);
-
-        return;
-      }
-
-      fs.createReadStream(
-        filePath
-      ).pipe(res);
+      stream.pipe(res);
     } catch (error) {
       console.error(
-        "[MEDIA ERROR]",
-        error
+        "[DOWNLOAD ERROR]",
+        error?.message ||
+          error
       );
 
       if (
@@ -1813,12 +1589,173 @@ app.get(
       ) {
         res.status(500).json({
           success: false,
-
           error:
-            "Unable to serve media.",
+            friendlyYtDlpError(
+              error
+            ),
         });
       }
     }
+  }
+);
+
+// ============================================================
+// FRIENDLY ERRORS
+// ============================================================
+
+function friendlyYtDlpError(
+  error
+) {
+  const message =
+    String(
+      error?.message ||
+        error ||
+        ""
+    );
+
+  const lower =
+    message.toLowerCase();
+
+  if (
+    lower.includes("private") ||
+    lower.includes("login") ||
+    lower.includes("sign in")
+  ) {
+    return "This video appears to require login or is private.";
+  }
+
+  if (
+    lower.includes("unsupported url")
+  ) {
+    return "This website or URL is not supported.";
+  }
+
+  if (
+    lower.includes("age-restricted")
+  ) {
+    return "This video is age restricted and cannot be downloaded.";
+  }
+
+  if (
+    lower.includes("not available")
+  ) {
+    return "This video is not available.";
+  }
+
+  if (
+    lower.includes("copyright")
+  ) {
+    return "This media cannot be accessed because of a copyright restriction.";
+  }
+
+  if (
+    lower.includes("timed out") ||
+    lower.includes("timeout")
+  ) {
+    return "The server took too long to process this video. Please try again.";
+  }
+
+  return message.length > 500
+    ? "Unable to process this video. Please try another public video URL."
+    : message ||
+        "Unable to process this video.";
+}
+
+// ============================================================
+// TOOLS
+// ============================================================
+
+app.get(
+  "/api/tools",
+  async (req, res) => {
+    const result = {
+      success: true,
+
+      ytDlp: {
+        path:
+          getYtDlpPath(),
+        installed:
+          fs.existsSync(
+            getYtDlpPath()
+          ),
+      },
+
+      ffmpeg: {
+        path:
+          FFMPEG_PATH,
+        installed:
+          fs.existsSync(
+            FFMPEG_PATH
+          ),
+      },
+
+      deno: {
+        path:
+          DENO_PATH,
+        installed:
+          fs.existsSync(
+            DENO_PATH
+          ),
+      },
+
+      timestamp:
+        new Date().toISOString(),
+    };
+
+    try {
+      const version =
+        await runCommand(
+          getYtDlpPath(),
+          ["--version"],
+          {
+            timeout: 15000,
+          }
+        );
+
+      result.ytDlp.version =
+        version.stdout.trim();
+    } catch (error) {
+      result.ytDlp.version =
+        null;
+    }
+
+    try {
+      const ffmpeg =
+        await runCommand(
+          FFMPEG_PATH,
+          ["-version"],
+          {
+            timeout: 15000,
+          }
+        );
+
+      result.ffmpeg.version =
+        ffmpeg.stdout
+          .split(/\r?\n/)[0];
+    } catch (error) {
+      result.ffmpeg.version =
+        null;
+    }
+
+    try {
+      const deno =
+        await runCommand(
+          DENO_PATH,
+          ["--version"],
+          {
+            timeout: 15000,
+          }
+        );
+
+      result.deno.version =
+        deno.stdout
+          .split(/\r?\n/)[0];
+    } catch (error) {
+      result.deno.version =
+        null;
+    }
+
+    res.json(result);
   }
 );
 
@@ -1830,15 +1767,10 @@ app.use(
   (req, res) => {
     res.status(404).json({
       success: false,
-
       error:
         "Endpoint not found",
-
-      path:
-        req.path,
-
-      method:
-        req.method,
+      path: req.path,
+      method: req.method,
     });
   }
 );
@@ -1867,7 +1799,6 @@ app.use(
 
     res.status(500).json({
       success: false,
-
       error:
         "Internal server error",
     });
@@ -1883,91 +1814,45 @@ app.listen(
   "0.0.0.0",
   () => {
     console.log("");
-
     console.log(
       "============================================================"
     );
-
     console.log(
-      "             STREAMBOX BACKEND v10.0.0"
+      "              STREAMBOX BACKEND v11.0.0"
     );
-
     console.log(
       "============================================================"
     );
-
     console.log(
       `Port: ${PORT}`
     );
-
     console.log(
       `Node: ${process.version}`
     );
-
     console.log(
       `yt-dlp: ${getYtDlpPath()}`
     );
-
     console.log(
       `FFmpeg: ${FFMPEG_PATH}`
     );
-
     console.log(
       `Deno: ${DENO_PATH}`
     );
-
-    console.log(
-      `Media directory: ${MEDIA_DIR}`
-    );
-
     console.log("");
-
     console.log(
-      "Supported:"
+      "YouTube: DISABLED"
     );
-
     console.log(
-      "✓ Instagram Videos / Reels"
+      "Generic yt-dlp public URLs: ENABLED"
     );
-
     console.log(
-      "✓ TikTok"
+      "Quality selection: ENABLED"
     );
-
     console.log(
-      "✓ Facebook"
+      "Preview metadata: ENABLED"
     );
-
-    console.log(
-      "✓ Pinterest / pin.it"
-    );
-
-    console.log(
-      "✓ Twitter / X"
-    );
-
-    console.log(
-      "✗ Instagram Profile Pictures"
-    );
-
-    console.log(
-      "✗ YouTube temporarily disabled"
-    );
-
-    console.log("");
-
-    console.log(
-      "Architecture:"
-    );
-
-    console.log(
-      "URL → yt-dlp → FFmpeg → temporary MP4 → Flutter"
-    );
-
     console.log(
       "============================================================"
     );
-
-    console.log("");
   }
 );
