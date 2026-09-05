@@ -568,12 +568,9 @@ function getYouTubeArgs() {
     "--remote-components",
     "ejs:github",
 
-    // Try multiple current clients.
+    // Let yt-dlp choose its supported default client.
     "--extractor-args",
-    "youtube:player_client=web_safari,web,ios,android",
-
-    "--extractor-args",
-    "youtube:player_skip=configs",
+    "youtube:player_client=default,mweb",
   ];
 }
 
@@ -602,11 +599,65 @@ async function extractMetadata(
     url,
   ];
 
-  if (platform === "youtube") {
-    args.push(
-      ...getYouTubeArgs()
+ // ----------------------------------------------------------
+// YOUTUBE
+// ----------------------------------------------------------
+if (platform === "youtube") {
+  try {
+    const parsed = new URL(url);
+    let videoId = null;
+
+    // youtu.be/VIDEO_ID
+    if (
+      parsed.hostname === "youtu.be" ||
+      parsed.hostname === "www.youtu.be"
+    ) {
+      videoId = parsed.pathname
+        .split("/")
+        .filter(Boolean)[0];
+    }
+
+    // youtube.com/shorts/VIDEO_ID
+    if (parsed.pathname.startsWith("/shorts/")) {
+      videoId = parsed.pathname
+        .split("/")
+        .filter(Boolean)[1];
+    }
+
+    // youtube.com/embed/VIDEO_ID
+    if (parsed.pathname.startsWith("/embed/")) {
+      videoId = parsed.pathname
+        .split("/")
+        .filter(Boolean)[1];
+    }
+
+    // youtube.com/live/VIDEO_ID
+    if (parsed.pathname.startsWith("/live/")) {
+      videoId = parsed.pathname
+        .split("/")
+        .filter(Boolean)[1];
+    }
+
+    // youtube.com/watch?v=VIDEO_ID
+    if (parsed.pathname === "/watch") {
+      videoId = parsed.searchParams.get("v");
+    }
+
+    if (videoId) {
+      url = `https://www.youtube.com/watch?v=${videoId}`;
+
+      console.log(
+        `[PREPARED] YouTube normalized: ${url}`
+      );
+    }
+  } catch (error) {
+    console.log(
+      `[PREPARE] YouTube URL normalization failed: ${error.message}`
     );
   }
+
+  return url;
+}
 
   // IMPORTANT:
   // Do NOT force --format best here.
@@ -1978,6 +2029,55 @@ app.get(
   }
 );
 
+app.get("/api/youtube-test", async (req, res) => {
+  const testUrl =
+    "https://www.youtube.com/watch?v=HPKQ2MyqDDg";
+
+  try {
+    const ytDlp = getYtDlpPath();
+
+    const args = [
+      ...getCommonYtDlpArgs(),
+
+      "--verbose",
+      "--dump-single-json",
+      "--skip-download",
+
+      "--referer",
+      testUrl,
+
+      ...getYouTubeArgs(),
+
+      testUrl,
+    ];
+
+    const result = await runCommand(
+      ytDlp,
+      args,
+      {
+        timeout: EXTRACTION_TIMEOUT,
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "YouTube extraction test succeeded",
+      ytDlp,
+      deno: DENO_PATH,
+      output: result.stdout,
+      errors: result.stderr,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: "YouTube extraction test failed",
+      error: error.message,
+      stdout: error.stdout || "",
+      stderr: error.stderr || "",
+    });
+  }
+});
+
 // ============================================================
 // 404
 // ============================================================
@@ -2040,7 +2140,7 @@ app.listen(
     );
 
     console.log(
-      "             STREAMBOX BACKEND v8.0.0"
+      "             STREAMBOX BACKEND v8.1.0"
     );
 
     console.log(
