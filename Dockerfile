@@ -4,7 +4,7 @@ FROM node:20-bookworm
 # SYSTEM PACKAGES
 # ============================================================
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     ca-certificates \
@@ -27,24 +27,32 @@ RUN curl -L \
     && chmod +x /usr/local/bin/yt-dlp
 
 # ============================================================
+# VERIFY TOOLS DURING BUILD
+# ============================================================
+
+RUN /usr/local/bin/yt-dlp --version \
+    && /usr/bin/ffmpeg -version \
+    && /usr/bin/ffprobe -version \
+    && /root/.deno/bin/deno --version
+
+# ============================================================
 # ENVIRONMENT
 # ============================================================
 
 ENV NODE_ENV=production
 
 ENV YTDLP_PATH=/usr/local/bin/yt-dlp
-
 ENV FFMPEG_PATH=/usr/bin/ffmpeg
-
 ENV DENO_INSTALL=/root/.deno
-
 ENV DENO_PATH=/root/.deno/bin/deno
 
 ENV PATH="/root/.deno/bin:/usr/local/bin:/usr/bin:${PATH}"
 
-ENV PORT=3000
-
 ENV MEDIA_TTL_SECONDS=1800
+
+# Do not depend on this value in Render.
+# Render automatically provides its own PORT value.
+ENV PORT=3000
 
 # ============================================================
 # APP
