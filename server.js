@@ -17,7 +17,6 @@ const PORT = process.env.PORT || 3000;
 const EXTRACTION_TIMEOUT = 180000;
 const DOWNLOAD_TIMEOUT = 600000;
 const REDIRECT_TIMEOUT = 20000;
-const DP_TIMEOUT = 30000;
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -138,8 +137,7 @@ function getPlatform(url) {
     return "twitter";
   }
 
-  // YouTube intentionally removed for now.
-
+  // YouTube intentionally disabled.
   return null;
 }
 
@@ -161,11 +159,13 @@ async function resolveRedirectUrl(inputUrl) {
       const response = await fetch(currentUrl, {
         method: "GET",
         redirect: "manual",
+
         headers: {
           "User-Agent": USER_AGENT,
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
+
         signal: controller.signal,
       });
 
@@ -312,11 +312,13 @@ function runCommand(
 
     const env = {
       ...process.env,
+
       PATH:
         `/root/.deno/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`,
     };
 
     console.log("");
+
     console.log(
       `[COMMAND] ${command} ${args.join(" ")}`
     );
@@ -326,8 +328,10 @@ function runCommand(
       args,
       {
         env,
+
         cwd:
           options.cwd || process.cwd(),
+
         windowsHide: true,
       }
     );
@@ -374,6 +378,7 @@ function runCommand(
         if (finished) return;
 
         finished = true;
+
         clearTimeout(timer);
 
         reject(error);
@@ -386,6 +391,7 @@ function runCommand(
         if (finished) return;
 
         finished = true;
+
         clearTimeout(timer);
 
         if (code === 0) {
@@ -448,14 +454,19 @@ function getCommonYtDlpArgs() {
     "--no-playlist",
     "--no-warnings",
     "--newline",
+
     "--retries",
     "5",
+
     "--fragment-retries",
     "5",
+
     "--extractor-retries",
     "5",
+
     "--retry-sleep",
     "1",
+
     "--user-agent",
     USER_AGENT,
   ];
@@ -473,12 +484,16 @@ async function extractMetadata(
 
   const args = [
     ...getCommonYtDlpArgs(),
+
     "--dump-single-json",
     "--skip-download",
+
     "--format-sort",
     "res:1080",
+
     "--referer",
     url,
+
     url,
   ];
 
@@ -646,9 +661,7 @@ function scoreFormat(format) {
 // SELECT FORMAT
 // ============================================================
 
-function selectBestFormat(
-  metadata
-) {
+function selectBestFormat(metadata) {
   const formats =
     getFormats(metadata);
 
@@ -740,6 +753,7 @@ async function downloadWithYtDlp(
         {
           timeout:
             DOWNLOAD_TIMEOUT,
+
           cwd:
             outputDir,
         }
@@ -801,6 +815,7 @@ function findDownloadedFile(
       )
       .map((file) => ({
         file,
+
         fullPath:
           path.join(
             directory,
@@ -963,6 +978,7 @@ async function createMediaJob(
 
   try {
     console.log("");
+
     console.log(
       `[JOB] ${token}`
     );
@@ -1029,6 +1045,7 @@ async function createMediaJob(
       );
     }
 
+    // Metadata is optional.
     let metadata = null;
 
     try {
@@ -1061,22 +1078,29 @@ async function createMediaJob(
 
     return {
       token,
+
       filePath:
         finalFile,
+
       fileSize:
         stat.size,
+
       title:
         metadata?.title ||
         "StreamBox Video",
+
       thumbnail:
         metadata?.thumbnail ||
         null,
+
       duration:
         metadata?.duration ||
         null,
+
       width:
         metadata?.width ||
         null,
+
       height:
         metadata?.height ||
         null,
@@ -1093,675 +1117,6 @@ async function createMediaJob(
     } catch {}
 
     throw error;
-  }
-}
-
-// ============================================================
-// INSTAGRAM DP DOWNLOADER - IMPROVED
-// ============================================================
-
-function extractInstagramUsername(inputUrl) {
-  try {
-    const parsed = new URL(inputUrl);
-    const hostname = parsed.hostname.toLowerCase();
-
-    if (
-      hostname !== "instagram.com" &&
-      hostname !== "www.instagram.com" &&
-      hostname !== "instagr.am" &&
-      hostname !== "www.instagr.am"
-    ) {
-      return null;
-    }
-
-    const parts = parsed.pathname
-      .split("/")
-      .filter(Boolean);
-
-    if (parts.length !== 1) {
-      return null;
-    }
-
-    const username = parts[0].trim();
-
-    const blocked = new Set([
-      "accounts",
-      "about",
-      "explore",
-      "direct",
-      "reels",
-      "reel",
-      "p",
-      "tv",
-      "stories",
-      "web",
-      "developer",
-      "privacy",
-      "terms",
-    ]);
-
-    if (blocked.has(username.toLowerCase())) {
-      return null;
-    }
-
-    if (!/^[A-Za-z0-9._]+$/.test(username)) {
-      return null;
-    }
-
-    return username;
-  } catch {
-    return null;
-  }
-}
-
-// ============================================================
-// HTML ENTITY DECODER
-// ============================================================
-
-function decodeHtmlEntities(value) {
-  if (!value) return value;
-
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&#34;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/&#38;/g, "&")
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-// ============================================================
-// EXTRACT IMAGE URL FROM HTML
-// ============================================================
-
-function extractImageFromInstagramHtml(html) {
-  if (!html) return null;
-
-  let imageUrl = null;
-
-  // ----------------------------------------------------------
-  // 1. profile_pic_url_hd
-  // ----------------------------------------------------------
-
-  const hdPatterns = [
-    /"profile_pic_url_hd"\s*:\s*"([^"]+)"/i,
-    /\\"profile_pic_url_hd\\"\s*:\s*\\"([^"]+)\\"/i,
-  ];
-
-  for (const pattern of hdPatterns) {
-    const match = html.match(pattern);
-
-    if (match && match[1]) {
-      imageUrl = match[1];
-      break;
-    }
-  }
-
-  // ----------------------------------------------------------
-  // 2. profile_pic_url
-  // ----------------------------------------------------------
-
-  if (!imageUrl) {
-    const profilePatterns = [
-      /"profile_pic_url"\s*:\s*"([^"]+)"/i,
-      /\\"profile_pic_url\\"\s*:\s*\\"([^"]+)\\"/i,
-    ];
-
-    for (const pattern of profilePatterns) {
-      const match = html.match(pattern);
-
-      if (match && match[1]) {
-        imageUrl = match[1];
-        break;
-      }
-    }
-  }
-
-  // ----------------------------------------------------------
-  // 3. og:image
-  // ----------------------------------------------------------
-
-  if (!imageUrl) {
-    const ogPatterns = [
-      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
-    ];
-
-    for (const pattern of ogPatterns) {
-      const match = html.match(pattern);
-
-      if (match && match[1]) {
-        imageUrl = match[1];
-        break;
-      }
-    }
-  }
-
-  // ----------------------------------------------------------
-  // 4. twitter:image
-  // ----------------------------------------------------------
-
-  if (!imageUrl) {
-    const twitterPatterns = [
-      /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
-    ];
-
-    for (const pattern of twitterPatterns) {
-      const match = html.match(pattern);
-
-      if (match && match[1]) {
-        imageUrl = match[1];
-        break;
-      }
-    }
-  }
-
-  if (!imageUrl) {
-    return null;
-  }
-
-  imageUrl = decodeHtmlEntities(imageUrl);
-
-  // Instagram sometimes escapes URLs
-  imageUrl = imageUrl
-    .replace(/\\u0026/g, "&")
-    .replace(/\\u003D/g, "=")
-    .replace(/\\\//g, "/")
-    .replace(/\\u002F/g, "/");
-
-  try {
-    imageUrl = decodeURIComponent(imageUrl);
-  } catch {}
-
-  return isValidHttpUrl(imageUrl)
-    ? imageUrl
-    : null;
-}
-
-// ============================================================
-// FETCH INSTAGRAM PROFILE IMAGE
-// ============================================================
-
-async function getInstagramProfilePicture(profileUrl) {
-  const username = extractInstagramUsername(profileUrl);
-
-  if (!username) {
-    throw new Error(
-      "Please provide a valid Instagram profile URL."
-    );
-  }
-
-  const canonicalUrl =
-    `https://www.instagram.com/${encodeURIComponent(username)}/`;
-
-  console.log(
-    `[INSTAGRAM DP] Fetching profile: @${username}`
-  );
-
-  let imageUrl = null;
-
-  // ==========================================================
-  // METHOD 1 - INSTAGRAM WEB PROFILE API
-  // ==========================================================
-
-  try {
-    console.log(
-      `[INSTAGRAM DP] Trying web profile API for @${username}`
-    );
-
-    const controller = new AbortController();
-
-    const timer = setTimeout(() => {
-      controller.abort();
-    }, DP_TIMEOUT);
-
-    try {
-      const apiUrl =
-        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
-
-      const response = await fetch(apiUrl, {
-        method: "GET",
-        redirect: "follow",
-        headers: {
-          "User-Agent": USER_AGENT,
-          "Accept": "application/json",
-          "Accept-Language": "en-US,en;q=0.9",
-          "X-IG-App-ID": "936619743392459",
-          "Referer": canonicalUrl,
-        },
-        signal: controller.signal,
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-
-        const user =
-          data?.data?.user ||
-          data?.user ||
-          null;
-
-        if (user) {
-          imageUrl =
-            user.profile_pic_url_hd ||
-            user.profile_pic_url ||
-            null;
-
-          if (imageUrl) {
-            console.log(
-              `[INSTAGRAM DP] API found profile picture for @${username}`
-            );
-          }
-        }
-      } else {
-        console.log(
-          `[INSTAGRAM DP] Profile API returned HTTP ${response.status}`
-        );
-      }
-    } finally {
-      clearTimeout(timer);
-    }
-  } catch (error) {
-    console.log(
-      `[INSTAGRAM DP] Profile API failed: ${error.message}`
-    );
-  }
-
-  // ==========================================================
-  // METHOD 2 - PROFILE HTML
-  // ==========================================================
-
-  if (!imageUrl) {
-    try {
-      console.log(
-        `[INSTAGRAM DP] Trying Instagram profile HTML`
-      );
-
-      const controller = new AbortController();
-
-      const timer = setTimeout(() => {
-        controller.abort();
-      }, DP_TIMEOUT);
-
-      try {
-        const response = await fetch(canonicalUrl, {
-          method: "GET",
-          redirect: "follow",
-          headers: {
-            "User-Agent": USER_AGENT,
-            "Accept":
-              "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language":
-              "en-US,en;q=0.9",
-            "Cache-Control":
-              "no-cache",
-            "Pragma":
-              "no-cache",
-            "Upgrade-Insecure-Requests":
-              "1",
-          },
-          signal: controller.signal,
-        });
-
-        if (response.ok) {
-          const html = await response.text();
-
-          imageUrl =
-            extractImageFromInstagramHtml(html);
-
-          if (imageUrl) {
-            console.log(
-              `[INSTAGRAM DP] HTML found profile picture for @${username}`
-            );
-          } else {
-            console.log(
-              `[INSTAGRAM DP] No profile image found in HTML`
-            );
-          }
-        } else {
-          console.log(
-            `[INSTAGRAM DP] Instagram HTML returned HTTP ${response.status}`
-          );
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    } catch (error) {
-      console.log(
-        `[INSTAGRAM DP] HTML request failed: ${error.message}`
-      );
-    }
-  }
-
-  // ==========================================================
-  // FINAL CHECK
-  // ==========================================================
-
-  if (!imageUrl) {
-    throw new Error(
-      "Instagram did not return a usable profile picture. The profile may be unavailable or Instagram may be restricting automated requests."
-    );
-  }
-
-  if (!isValidHttpUrl(imageUrl)) {
-    throw new Error(
-      "Instagram returned an invalid profile picture URL."
-    );
-  }
-
-  return {
-    username,
-    profileUrl: canonicalUrl,
-    imageUrl,
-  };
-}
-
-// ============================================================
-// DOWNLOAD IMAGE TO SERVER
-// ============================================================
-
-async function downloadInstagramImage(
-  imageUrl,
-  username
-) {
-  console.log(
-    `[INSTAGRAM DP] Downloading image for @${username}`
-  );
-
-  const controller = new AbortController();
-
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, DP_TIMEOUT);
-
-  try {
-    const response = await fetch(imageUrl, {
-      method: "GET",
-      redirect: "follow",
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept:
-          "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-        Referer:
-          "https://www.instagram.com/",
-      },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(
-        `Instagram image returned HTTP ${response.status}`
-      );
-    }
-
-    const contentType =
-      response.headers.get("content-type") || "";
-
-    if (!contentType.startsWith("image/")) {
-      throw new Error(
-        `Instagram returned non-image content: ${contentType}`
-      );
-    }
-
-    const buffer = Buffer.from(
-      await response.arrayBuffer()
-    );
-
-    if (!buffer.length) {
-      throw new Error(
-        "Instagram returned an empty profile image."
-      );
-    }
-
-    const token = createMediaToken();
-
-    const jobDir = path.join(
-      MEDIA_DIR,
-      token
-    );
-
-    fs.mkdirSync(jobDir, {
-      recursive: true,
-    });
-
-    let extension = ".jpg";
-
-    if (contentType.includes("png")) {
-      extension = ".png";
-    } else if (contentType.includes("webp")) {
-      extension = ".webp";
-    } else if (contentType.includes("gif")) {
-      extension = ".gif";
-    } else if (contentType.includes("jpeg")) {
-      extension = ".jpg";
-    }
-
-    const filePath = path.join(
-      jobDir,
-      `profile${extension}`
-    );
-
-    fs.writeFileSync(
-      filePath,
-      buffer
-    );
-
-    // Store information about the DP
-    fs.writeFileSync(
-      path.join(jobDir, "metadata.json"),
-      JSON.stringify(
-        {
-          type: "instagram-profile-picture",
-          username,
-          contentType,
-          extension,
-          fileSize: buffer.length,
-          createdAt: new Date().toISOString(),
-        },
-        null,
-        2
-      )
-    );
-
-    console.log(
-      `[INSTAGRAM DP] Saved ${buffer.length} bytes`
-    );
-
-    return {
-      token,
-      filePath,
-      fileSize: buffer.length,
-      extension,
-      contentType,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// ------------------------------------------------------------
-// HTML ENTITY DECODING
-// ------------------------------------------------------------
-
-function decodeHtmlEntities(value) {
-  if (!value) {
-    return value;
-  }
-
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&#34;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/&#38;/g, "&")
-    .replace(/&#x27;/gi, "'")
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
-}
-
-// ------------------------------------------------------------
-// INSTAGRAM DP FETCH
-// ------------------------------------------------------------
-
-async function getInstagramProfilePicture(
-  profileUrl
-) {
-  const username =
-    extractInstagramUsername(
-      profileUrl
-    );
-
-  if (!username) {
-    throw new Error(
-      "Please provide a valid Instagram profile URL."
-    );
-  }
-
-  const url =
-    `https://www.instagram.com/${encodeURIComponent(
-      username
-    )}/`;
-
-  const controller =
-    new AbortController();
-
-  const timer =
-    setTimeout(() => {
-      controller.abort();
-    }, DP_TIMEOUT);
-
-  try {
-    console.log(
-      `[INSTAGRAM DP] Fetching profile: @${username}`
-    );
-
-    const response =
-      await fetch(url, {
-        method: "GET",
-        redirect: "follow",
-
-        headers: {
-          "User-Agent":
-            USER_AGENT,
-
-          Accept:
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-
-          "Accept-Language":
-            "en-US,en;q=0.9",
-
-          "Cache-Control":
-            "no-cache",
-        },
-
-        signal:
-          controller.signal,
-      });
-
-    if (!response.ok) {
-      throw new Error(
-        `Instagram returned HTTP ${response.status}`
-      );
-    }
-
-    const html =
-      await response.text();
-
-    if (!html) {
-      throw new Error(
-        "Instagram returned an empty response."
-      );
-    }
-
-    let imageUrl = null;
-
-    // --------------------------------------------------------
-    // og:image
-    // --------------------------------------------------------
-
-    const ogImagePatterns = [
-      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
-      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
-    ];
-
-    for (
-      const pattern of ogImagePatterns
-    ) {
-      const match =
-        html.match(pattern);
-
-      if (
-        match &&
-        match[1]
-      ) {
-        imageUrl =
-          decodeHtmlEntities(
-            match[1]
-          );
-
-        break;
-      }
-    }
-
-    // --------------------------------------------------------
-    // twitter:image fallback
-    // --------------------------------------------------------
-
-    if (!imageUrl) {
-      const twitterPatterns = [
-        /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
-        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
-      ];
-
-      for (
-        const pattern of twitterPatterns
-      ) {
-        const match =
-          html.match(pattern);
-
-        if (
-          match &&
-          match[1]
-        ) {
-          imageUrl =
-            decodeHtmlEntities(
-              match[1]
-            );
-
-          break;
-        }
-      }
-    }
-
-    if (!imageUrl) {
-      throw new Error(
-        "Instagram profile picture could not be found. The profile may be private, unavailable, or Instagram may have restricted the request."
-      );
-    }
-
-    if (
-      !isValidHttpUrl(
-        imageUrl
-      )
-    ) {
-      throw new Error(
-        "Instagram returned an invalid profile picture URL."
-      );
-    }
-
-    console.log(
-      `[INSTAGRAM DP] Found profile picture for @${username}`
-    );
-
-    return {
-      username,
-      profileUrl: url,
-      imageUrl,
-    };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -1852,14 +1207,13 @@ app.get(
         "online",
 
       version:
-        "9.0.0",
+        "10.0.0",
 
       architecture:
         "yt-dlp + FFmpeg + temporary MP4",
 
       platforms: [
         "instagram",
-        "instagram-dp",
         "tiktok",
         "facebook",
         "pinterest",
@@ -1868,6 +1222,9 @@ app.get(
 
       youtube:
         "temporarily disabled",
+
+      instagramProfilePictures:
+        "disabled",
 
       timestamp:
         new Date().toISOString(),
@@ -1892,7 +1249,7 @@ app.get(
         "StreamBox Backend",
 
       version:
-        "9.0.0",
+        "10.0.0",
 
       timestamp:
         new Date().toISOString(),
@@ -1947,6 +1304,10 @@ app.get(
         new Date().toISOString(),
     };
 
+    // --------------------------------------------------------
+    // YT-DLP VERSION
+    // --------------------------------------------------------
+
     try {
       const version =
         await runCommand(
@@ -1966,6 +1327,10 @@ app.get(
       result.ytDlp.error =
         error.message;
     }
+
+    // --------------------------------------------------------
+    // FFMPEG VERSION
+    // --------------------------------------------------------
 
     try {
       const ffmpeg =
@@ -1987,6 +1352,10 @@ app.get(
       result.ffmpeg.error =
         error.message;
     }
+
+    // --------------------------------------------------------
+    // DENO VERSION
+    // --------------------------------------------------------
 
     try {
       const deno =
@@ -2010,130 +1379,6 @@ app.get(
     }
 
     res.json(result);
-  }
-);
-
-// ============================================================
-// INSTAGRAM DP API
-// ============================================================
-
-app.post(
-  "/api/instagram/dp",
-  async (req, res) => {
-    const started = Date.now();
-
-    try {
-      const inputUrl = cleanInputUrl(
-        req.body?.url
-      );
-
-      if (!inputUrl) {
-        return res.status(400).json({
-          success: false,
-          error:
-            "Please provide an Instagram profile URL.",
-        });
-      }
-
-      if (!isValidHttpUrl(inputUrl)) {
-        return res.status(400).json({
-          success: false,
-          error:
-            "Invalid Instagram profile URL.",
-        });
-      }
-
-      const username =
-        extractInstagramUsername(inputUrl);
-
-      if (!username) {
-        return res.status(400).json({
-          success: false,
-          error:
-            "Please enter an Instagram profile URL, for example https://www.instagram.com/username/",
-        });
-      }
-
-      const profile =
-        await getInstagramProfilePicture(
-          inputUrl
-        );
-
-      // IMPORTANT:
-      // Download the Instagram image onto OUR server.
-      const image =
-        await downloadInstagramImage(
-          profile.imageUrl,
-          profile.username
-        );
-
-      const processingTimeMs =
-        Date.now() - started;
-
-      const baseUrl =
-        `${req.protocol}://${req.get("host")}`;
-
-      const mediaUrl =
-        `${baseUrl}/api/instagram/dp/media/${image.token}`;
-
-      console.log(
-        `[INSTAGRAM DP] SUCCESS @${profile.username}`
-      );
-
-      console.log(
-        `[INSTAGRAM DP] ${mediaUrl}`
-      );
-
-      return res.status(200).json({
-        success: true,
-        platform: "instagram",
-        type: "profile_picture",
-
-        username:
-          profile.username,
-
-        profileUrl:
-          profile.profileUrl,
-
-        // Original Instagram URL.
-        // Flutter should NOT download this.
-        imageUrl:
-          profile.imageUrl,
-
-        // StreamBox server URL.
-        mediaUrl,
-
-        downloadUrl:
-          mediaUrl,
-
-        mimeType:
-          image.contentType,
-
-        extension:
-          image.extension,
-
-        fileSize:
-          image.fileSize,
-
-        processingTimeMs,
-      });
-    } catch (error) {
-      const processingTimeMs =
-        Date.now() - started;
-
-      console.error(
-        "[INSTAGRAM DP ERROR]",
-        error.message
-      );
-
-      return res.status(500).json({
-        success: false,
-        error:
-          error.message ||
-          "Unable to retrieve Instagram profile picture.",
-        processingTimeMs,
-      });
-    }
   }
 );
 
@@ -2177,6 +1422,7 @@ app.post(
       if (!inputUrl) {
         return res.status(400).json({
           success: false,
+
           error:
             "Please provide a video URL.",
         });
@@ -2189,6 +1435,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           error:
             "Invalid URL.",
         });
@@ -2202,29 +1449,10 @@ app.post(
       if (!platform) {
         return res.status(400).json({
           success: false,
+
           error:
             "Unsupported platform.",
         });
-      }
-
-      // Instagram DP requests should use the DP endpoint.
-      if (
-        platform === "instagram"
-      ) {
-        const username =
-          extractInstagramUsername(
-            inputUrl
-          );
-
-        if (username) {
-          return res.status(400).json({
-            success: false,
-            error:
-              "This is an Instagram profile URL. Use POST /api/instagram/dp for profile pictures.",
-            endpoint:
-              "/api/instagram/dp",
-          });
-        }
       }
 
       console.log("");
@@ -2241,6 +1469,59 @@ app.post(
         `[PLATFORM] ${platform}`
       );
 
+      // ------------------------------------------------------
+      // Instagram profile URLs are no longer supported
+      // because Instagram DP downloader has been removed.
+      // ------------------------------------------------------
+
+      if (
+        platform === "instagram"
+      ) {
+        try {
+          const parsed =
+            new URL(inputUrl);
+
+          const segments =
+            parsed.pathname
+              .split("/")
+              .filter(Boolean);
+
+          const blockedProfilePaths = new Set([
+            "accounts",
+            "about",
+            "explore",
+            "direct",
+            "reels",
+            "reel",
+            "p",
+            "tv",
+            "stories",
+            "web",
+            "developer",
+            "privacy",
+            "terms",
+          ]);
+
+          if (
+            segments.length === 1 &&
+            !blockedProfilePaths.has(
+              segments[0].toLowerCase()
+            )
+          ) {
+            return res.status(400).json({
+              success: false,
+
+              error:
+                "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
+            });
+          }
+        } catch {}
+      }
+
+      // ------------------------------------------------------
+      // PREPARE URL
+      // ------------------------------------------------------
+
       const preparedUrl =
         await prepareUrl(
           platform,
@@ -2250,6 +1531,10 @@ app.post(
       console.log(
         `[PREPARED] ${preparedUrl}`
       );
+
+      // ------------------------------------------------------
+      // CREATE DOWNLOAD JOB
+      // ------------------------------------------------------
 
       const job =
         await createMediaJob(
@@ -2331,6 +1616,7 @@ app.post(
         started;
 
       console.error("");
+
       console.error(
         "[EXTRACTION ERROR]"
       );
@@ -2375,6 +1661,7 @@ app.get(
       ) {
         return res.status(400).json({
           success: false,
+
           error:
             "Invalid media token.",
         });
@@ -2399,6 +1686,7 @@ app.get(
       ) {
         return res.status(404).json({
           success: false,
+
           error:
             "Media expired or no longer available.",
         });
@@ -2434,6 +1722,10 @@ app.get(
         'attachment; filename="StreamBox.mp4"'
       );
 
+      // ------------------------------------------------------
+      // RANGE REQUEST
+      // ------------------------------------------------------
+
       const range =
         req.headers.range;
 
@@ -2462,6 +1754,7 @@ app.get(
 
         if (
           Number.isNaN(start) ||
+          start < 0 ||
           start >= stat.size
         ) {
           return res
@@ -2520,139 +1813,9 @@ app.get(
       ) {
         res.status(500).json({
           success: false,
+
           error:
             "Unable to serve media.",
-        });
-      }
-    }
-  }
-);
-
-// ============================================================
-// INSTAGRAM DP MEDIA STREAM
-// ============================================================
-
-app.get(
-  "/api/instagram/dp/media/:token",
-  (req, res) => {
-    try {
-      const token =
-        req.params.token;
-
-      if (
-        !/^[a-f0-9]{48}$/i.test(token)
-      ) {
-        return res.status(400).json({
-          success: false,
-          error:
-            "Invalid media token.",
-        });
-      }
-
-      const jobDir =
-        path.join(
-          MEDIA_DIR,
-          token
-        );
-
-      if (
-        !fs.existsSync(jobDir)
-      ) {
-        return res.status(404).json({
-          success: false,
-          error:
-            "Profile picture expired or no longer available.",
-        });
-      }
-
-      const files =
-        fs.readdirSync(jobDir);
-
-      const imageFile =
-        files.find((file) =>
-          /\.(jpg|jpeg|png|webp|gif)$/i.test(
-            file
-          )
-        );
-
-      if (!imageFile) {
-        return res.status(404).json({
-          success: false,
-          error:
-            "Profile picture file not found.",
-        });
-      }
-
-      const filePath =
-        path.join(
-          jobDir,
-          imageFile
-        );
-
-      if (
-        !fs.existsSync(filePath)
-      ) {
-        return res.status(404).json({
-          success: false,
-          error:
-            "Profile picture expired.",
-        });
-      }
-
-      const stat =
-        fs.statSync(filePath);
-
-      const extension =
-        path.extname(
-          imageFile
-        ).toLowerCase();
-
-      const mimeTypes = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-      };
-
-      const contentType =
-        mimeTypes[extension] ||
-        "application/octet-stream";
-
-      res.setHeader(
-        "Content-Type",
-        contentType
-      );
-
-      res.setHeader(
-        "Content-Length",
-        stat.size
-      );
-
-      res.setHeader(
-        "Cache-Control",
-        "private, max-age=300"
-      );
-
-      res.setHeader(
-        "Content-Disposition",
-        `attachment; filename="StreamBox_${token}${extension}"`
-      );
-
-      fs.createReadStream(
-        filePath
-      ).pipe(res);
-    } catch (error) {
-      console.error(
-        "[INSTAGRAM DP MEDIA ERROR]",
-        error
-      );
-
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          error:
-            "Unable to serve profile picture.",
         });
       }
     }
@@ -2704,6 +1867,7 @@ app.use(
 
     res.status(500).json({
       success: false,
+
       error:
         "Internal server error",
     });
@@ -2725,7 +1889,7 @@ app.listen(
     );
 
     console.log(
-      "             STREAMBOX BACKEND v9.0.0"
+      "             STREAMBOX BACKEND v10.0.0"
     );
 
     console.log(
@@ -2763,11 +1927,7 @@ app.listen(
     );
 
     console.log(
-      "✓ Instagram"
-    );
-
-    console.log(
-      "✓ Instagram DP"
+      "✓ Instagram Videos / Reels"
     );
 
     console.log(
@@ -2787,6 +1947,10 @@ app.listen(
     );
 
     console.log(
+      "✗ Instagram Profile Pictures"
+    );
+
+    console.log(
       "✗ YouTube temporarily disabled"
     );
 
@@ -2798,10 +1962,6 @@ app.listen(
 
     console.log(
       "URL → yt-dlp → FFmpeg → temporary MP4 → Flutter"
-    );
-
-    console.log(
-      "Instagram DP → Instagram profile → profile image URL → Flutter"
     );
 
     console.log(
