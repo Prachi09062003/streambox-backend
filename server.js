@@ -85,7 +85,9 @@ function cleanInputUrl(value) {
 function normalizeUrl(value) {
   try {
     const url = new URL(value);
+
     url.hash = "";
+
     return url.toString();
   } catch {
     return value;
@@ -140,45 +142,6 @@ function getPlatform(url) {
 }
 
 // ============================================================
-// INSTAGRAM PROFILE DETECTION
-// ============================================================
-
-function isInstagramProfileUrl(inputUrl) {
-  try {
-    const parsed = new URL(inputUrl);
-
-    const segments = parsed.pathname
-      .split("/")
-      .filter(Boolean);
-
-    const blockedPaths = new Set([
-      "accounts",
-      "about",
-      "explore",
-      "direct",
-      "reels",
-      "reel",
-      "p",
-      "tv",
-      "stories",
-      "web",
-      "developer",
-      "privacy",
-      "terms",
-    ]);
-
-    return (
-      segments.length === 1 &&
-      !blockedPaths.has(
-        segments[0].toLowerCase()
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
-// ============================================================
 // REDIRECT RESOLUTION
 // ============================================================
 
@@ -196,11 +159,13 @@ async function resolveRedirectUrl(inputUrl) {
       const response = await fetch(currentUrl, {
         method: "GET",
         redirect: "manual",
+
         headers: {
           "User-Agent": USER_AGENT,
           Accept:
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         },
+
         signal: controller.signal,
       });
 
@@ -347,11 +312,13 @@ function runCommand(
 
     const env = {
       ...process.env,
+
       PATH:
         `/root/.deno/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`,
     };
 
     console.log("");
+
     console.log(
       `[COMMAND] ${command} ${args.join(" ")}`
     );
@@ -361,8 +328,10 @@ function runCommand(
       args,
       {
         env,
+
         cwd:
           options.cwd || process.cwd(),
+
         windowsHide: true,
       }
     );
@@ -409,6 +378,7 @@ function runCommand(
         if (finished) return;
 
         finished = true;
+
         clearTimeout(timer);
 
         reject(error);
@@ -421,6 +391,7 @@ function runCommand(
         if (finished) return;
 
         finished = true;
+
         clearTimeout(timer);
 
         if (code === 0) {
@@ -502,7 +473,7 @@ function getCommonYtDlpArgs() {
 }
 
 // ============================================================
-// EXTRACT METADATA ONLY
+// EXTRACT METADATA
 // ============================================================
 
 async function extractMetadata(
@@ -515,7 +486,6 @@ async function extractMetadata(
     ...getCommonYtDlpArgs(),
 
     "--dump-single-json",
-
     "--skip-download",
 
     "--format-sort",
@@ -590,19 +560,15 @@ async function extractMetadata(
 }
 
 // ============================================================
-// HTTP URL CHECK
+// FORMAT INFORMATION
 // ============================================================
 
 function isHttpUrl(value) {
   return (
     typeof value === "string" &&
-    /^https?:\/\/.+/i.test(value)
+    /^https?:\/\//i.test(value)
   );
 }
-
-// ============================================================
-// GET FORMATS
-// ============================================================
 
 function getFormats(metadata) {
   if (
@@ -648,7 +614,6 @@ function scoreFormat(format) {
   const fps =
     Number(format.fps || 0);
 
-  // Prefer video
   if (
     vcodec &&
     vcodec !== "none"
@@ -656,7 +621,6 @@ function scoreFormat(format) {
     score += 1000;
   }
 
-  // Prefer audio + video together
   if (
     acodec &&
     acodec !== "none"
@@ -664,12 +628,10 @@ function scoreFormat(format) {
     score += 500;
   }
 
-  // Prefer MP4
   if (ext === "mp4") {
     score += 400;
   }
 
-  // Avoid streaming-only formats
   if (
     protocol.includes("m3u8") ||
     protocol.includes("dash")
@@ -687,7 +649,6 @@ function scoreFormat(format) {
     120
   );
 
-  // Avoid unnecessarily huge resolutions
   if (height > 1080) {
     score -=
       (height - 1080) * 0.5;
@@ -697,10 +658,10 @@ function scoreFormat(format) {
 }
 
 // ============================================================
-// SELECT PREVIEW FORMAT
+// SELECT FORMAT
 // ============================================================
 
-function selectPreviewFormat(metadata) {
+function selectBestFormat(metadata) {
   const formats =
     getFormats(metadata);
 
@@ -708,48 +669,25 @@ function selectPreviewFormat(metadata) {
     return null;
   }
 
-  // Prefer formats containing BOTH video and audio.
-  const combinedFormats =
-    formats.filter((format) => {
-      const vcodec =
-        String(
-          format.vcodec || ""
-        ).toLowerCase();
-
-      const acodec =
-        String(
-          format.acodec || ""
-        ).toLowerCase();
-
-      return (
-        vcodec &&
-        vcodec !== "none" &&
-        acodec &&
-        acodec !== "none"
-      );
-    });
-
   const videoFormats =
-    formats.filter((format) => {
-      const vcodec =
-        String(
-          format.vcodec || ""
-        ).toLowerCase();
+    formats.filter(
+      (format) => {
+        const vcodec =
+          String(
+            format.vcodec || ""
+          ).toLowerCase();
 
-      return (
-        vcodec &&
-        vcodec !== "none"
-      );
-    });
+        return (
+          vcodec &&
+          vcodec !== "none"
+        );
+      }
+    );
 
-  let candidates =
-    combinedFormats.length > 0
-      ? combinedFormats
-      : videoFormats;
-
-  if (candidates.length === 0) {
-    candidates = formats;
-  }
+  const candidates =
+    videoFormats.length > 0
+      ? videoFormats
+      : formats;
 
   candidates.sort(
     (a, b) =>
@@ -758,180 +696,6 @@ function selectPreviewFormat(metadata) {
   );
 
   return candidates[0];
-}
-
-// ============================================================
-// CREATE PREVIEW TOKEN
-// ============================================================
-
-function createMediaToken() {
-  return crypto
-    .randomBytes(24)
-    .toString("hex");
-}
-
-// ============================================================
-// CREATE PREVIEW JOB
-// ============================================================
-
-function createPreviewJob(
-  preparedUrl,
-  platform,
-  metadata,
-  previewFormat
-) {
-  const token =
-    createMediaToken();
-
-  const jobDir =
-    path.join(
-      MEDIA_DIR,
-      token
-    );
-
-  fs.mkdirSync(
-    jobDir,
-    {
-      recursive: true,
-    }
-  );
-
-  const jobData = {
-    token,
-
-    sourceUrl:
-      preparedUrl,
-
-    platform,
-
-    createdAt:
-      Date.now(),
-
-    metadata: {
-      title:
-        metadata?.title ||
-        "StreamBox Video",
-
-      thumbnail:
-        metadata?.thumbnail ||
-        null,
-
-      duration:
-        metadata?.duration ||
-        null,
-
-      width:
-        metadata?.width ||
-        null,
-
-      height:
-        metadata?.height ||
-        null,
-
-      uploader:
-        metadata?.uploader ||
-        metadata?.channel ||
-        null,
-    },
-
-    preview: {
-      url:
-        previewFormat?.url ||
-        null,
-
-      ext:
-        previewFormat?.ext ||
-        null,
-
-      width:
-        previewFormat?.width ||
-        null,
-
-      height:
-        previewFormat?.height ||
-        null,
-
-      duration:
-        previewFormat?.duration ||
-        metadata?.duration ||
-        null,
-
-      hasVideo:
-        previewFormat
-          ? String(
-              previewFormat.vcodec ||
-                ""
-            ).toLowerCase() !==
-              "none"
-          : false,
-
-      hasAudio:
-        previewFormat
-          ? String(
-              previewFormat.acodec ||
-                ""
-            ).toLowerCase() !==
-              "none"
-          : false,
-    },
-  };
-
-  fs.writeFileSync(
-    path.join(
-      jobDir,
-      "job.json"
-    ),
-    JSON.stringify(
-      jobData,
-      null,
-      2
-    )
-  );
-
-  return jobData;
-}
-
-// ============================================================
-// READ JOB
-// ============================================================
-
-function readJob(token) {
-  if (
-    !/^[a-f0-9]{48}$/i.test(
-      token
-    )
-  ) {
-    return null;
-  }
-
-  const jobDir =
-    path.join(
-      MEDIA_DIR,
-      token
-    );
-
-  const jobFile =
-    path.join(
-      jobDir,
-      "job.json"
-    );
-
-  if (
-    !fs.existsSync(jobFile)
-  ) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(
-      fs.readFileSync(
-        jobFile,
-        "utf8"
-      )
-    );
-  } catch {
-    return null;
-  }
 }
 
 // ============================================================
@@ -972,9 +736,7 @@ async function downloadWithYtDlp(
     outputTemplate,
 
     "--no-part",
-
     "--no-continue",
-
     "--newline",
 
     "--referer",
@@ -1155,9 +917,7 @@ async function normalizeToMp4(
   );
 
   if (
-    !fs.existsSync(
-      outputFile
-    )
+    !fs.existsSync(outputFile)
   ) {
     throw new Error(
       "FFmpeg did not create the MP4 file"
@@ -1183,122 +943,181 @@ async function normalizeToMp4(
 }
 
 // ============================================================
-// CREATE DOWNLOAD
+// MEDIA TOKEN
 // ============================================================
 
-async function processDownloadJob(
-  token,
-  job
+function createMediaToken() {
+  return crypto
+    .randomBytes(24)
+    .toString("hex");
+}
+
+// ============================================================
+// MEDIA JOB
+// ============================================================
+
+async function createMediaJob(
+  url,
+  platform
 ) {
+  const token =
+    createMediaToken();
+
   const jobDir =
     path.join(
       MEDIA_DIR,
       token
     );
 
-  console.log("");
-  console.log(
-    `[JOB] Starting download ${token}`
+  fs.mkdirSync(
+    jobDir,
+    {
+      recursive: true,
+    }
   );
 
-  await downloadWithYtDlp(
-    job.sourceUrl,
-    job.platform,
-    jobDir
-  );
+  try {
+    console.log("");
 
-  const downloadedFile =
-    findDownloadedFile(
+    console.log(
+      `[JOB] ${token}`
+    );
+
+    await downloadWithYtDlp(
+      url,
+      platform,
       jobDir
     );
 
-  if (!downloadedFile) {
-    throw new Error(
-      "yt-dlp completed but no media file was created"
-    );
-  }
+    const downloadedFile =
+      findDownloadedFile(
+        jobDir
+      );
 
-  const finalFile =
-    path.join(
-      jobDir,
-      "streambox.mp4"
-    );
+    if (!downloadedFile) {
+      throw new Error(
+        "yt-dlp completed but no media file was created"
+      );
+    }
 
-  if (
-    downloadedFile
-      .toLowerCase()
-      .endsWith(".mp4")
-  ) {
+    const finalFile =
+      path.join(
+        jobDir,
+        "streambox.mp4"
+      );
+
     if (
-      downloadedFile !==
-      finalFile
+      downloadedFile
+        .toLowerCase()
+        .endsWith(".mp4")
     ) {
-      fs.renameSync(
+      if (
+        downloadedFile !== finalFile
+      ) {
+        fs.renameSync(
+          downloadedFile,
+          finalFile
+        );
+      }
+    } else {
+      await normalizeToMp4(
         downloadedFile,
         finalFile
       );
     }
-  } else {
-    await normalizeToMp4(
-      downloadedFile,
-      finalFile
+
+    if (
+      !fs.existsSync(finalFile)
+    ) {
+      throw new Error(
+        "Final media file does not exist"
+      );
+    }
+
+    const stat =
+      fs.statSync(
+        finalFile
+      );
+
+    if (stat.size <= 0) {
+      throw new Error(
+        "Final media file is empty"
+      );
+    }
+
+    // Metadata is optional.
+    let metadata = null;
+
+    try {
+      metadata =
+        await extractMetadata(
+          url,
+          platform
+        );
+
+      fs.writeFileSync(
+        path.join(
+          jobDir,
+          "metadata.json"
+        ),
+        JSON.stringify(
+          metadata,
+          null,
+          2
+        )
+      );
+    } catch (error) {
+      console.log(
+        `[METADATA] Optional metadata extraction failed: ${error.message}`
+      );
+    }
+
+    console.log(
+      `[JOB] Completed ${token}`
     );
+
+    return {
+      token,
+
+      filePath:
+        finalFile,
+
+      fileSize:
+        stat.size,
+
+      title:
+        metadata?.title ||
+        "StreamBox Video",
+
+      thumbnail:
+        metadata?.thumbnail ||
+        null,
+
+      duration:
+        metadata?.duration ||
+        null,
+
+      width:
+        metadata?.width ||
+        null,
+
+      height:
+        metadata?.height ||
+        null,
+    };
+  } catch (error) {
+    try {
+      fs.rmSync(
+        jobDir,
+        {
+          recursive: true,
+          force: true,
+        }
+      );
+    } catch {}
+
+    throw error;
   }
-
-  if (
-    !fs.existsSync(
-      finalFile
-    )
-  ) {
-    throw new Error(
-      "Final media file does not exist"
-    );
-  }
-
-  const stat =
-    fs.statSync(
-      finalFile
-    );
-
-  if (stat.size <= 0) {
-    throw new Error(
-      "Final media file is empty"
-    );
-  }
-
-  console.log(
-    `[JOB] Download completed ${token}`
-  );
-
-  return {
-    token,
-
-    filePath:
-      finalFile,
-
-    fileSize:
-      stat.size,
-
-    title:
-      job.metadata?.title ||
-      "StreamBox Video",
-
-    thumbnail:
-      job.metadata?.thumbnail ||
-      null,
-
-    duration:
-      job.metadata?.duration ||
-      null,
-
-    width:
-      job.metadata?.width ||
-      null,
-
-    height:
-      job.metadata?.height ||
-      null,
-  };
 }
 
 // ============================================================
@@ -1388,10 +1207,10 @@ app.get(
         "online",
 
       version:
-        "11.0.0",
+        "10.0.0",
 
       architecture:
-        "yt-dlp metadata preview → user confirmation → yt-dlp + FFmpeg → temporary MP4",
+        "yt-dlp + FFmpeg + temporary MP4",
 
       platforms: [
         "instagram",
@@ -1406,9 +1225,6 @@ app.get(
 
       instagramProfilePictures:
         "disabled",
-
-      previewBeforeDownload:
-        true,
 
       timestamp:
         new Date().toISOString(),
@@ -1433,10 +1249,7 @@ app.get(
         "StreamBox Backend",
 
       version:
-        "11.0.0",
-
-      previewBeforeDownload:
-        true,
+        "10.0.0",
 
       timestamp:
         new Date().toISOString(),
@@ -1592,16 +1405,6 @@ app.get(
 
 // ============================================================
 // MAIN EXTRACT
-//
-// IMPORTANT:
-// This endpoint DOES NOT download the video.
-//
-// It only:
-// 1. Validates URL
-// 2. Detects platform
-// 3. Resolves short URL
-// 4. Extracts metadata
-// 5. Creates preview job
 // ============================================================
 
 app.post(
@@ -1659,7 +1462,7 @@ app.post(
       );
 
       console.log(
-        `[PREVIEW REQUEST] ${inputUrl}`
+        `[REQUEST] ${inputUrl}`
       );
 
       console.log(
@@ -1667,21 +1470,52 @@ app.post(
       );
 
       // ------------------------------------------------------
-      // INSTAGRAM PROFILE
+      // Instagram profile URLs are no longer supported
+      // because Instagram DP downloader has been removed.
       // ------------------------------------------------------
 
       if (
-        platform === "instagram" &&
-        isInstagramProfileUrl(
-          inputUrl
-        )
+        platform === "instagram"
       ) {
-        return res.status(400).json({
-          success: false,
+        try {
+          const parsed =
+            new URL(inputUrl);
 
-          error:
-            "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
-        });
+          const segments =
+            parsed.pathname
+              .split("/")
+              .filter(Boolean);
+
+          const blockedProfilePaths = new Set([
+            "accounts",
+            "about",
+            "explore",
+            "direct",
+            "reels",
+            "reel",
+            "p",
+            "tv",
+            "stories",
+            "web",
+            "developer",
+            "privacy",
+            "terms",
+          ]);
+
+          if (
+            segments.length === 1 &&
+            !blockedProfilePaths.has(
+              segments[0].toLowerCase()
+            )
+          ) {
+            return res.status(400).json({
+              success: false,
+
+              error:
+                "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
+            });
+          }
+        } catch {}
       }
 
       // ------------------------------------------------------
@@ -1699,137 +1533,14 @@ app.post(
       );
 
       // ------------------------------------------------------
-      // EXTRACT METADATA ONLY
+      // CREATE DOWNLOAD JOB
       // ------------------------------------------------------
 
-      const metadata =
-        await extractMetadata(
+      const job =
+        await createMediaJob(
           preparedUrl,
           platform
         );
-
-      // ------------------------------------------------------
-      // VERIFY VIDEO
-      // ------------------------------------------------------
-
-      const previewFormat =
-        selectPreviewFormat(
-          metadata
-        );
-
-      if (
-        !previewFormat ||
-        !previewFormat.url
-      ) {
-        throw new Error(
-          "No previewable video format was found."
-        );
-      }
-
-      const token =
-        createMediaToken();
-
-      const jobDir =
-        path.join(
-          MEDIA_DIR,
-          token
-        );
-
-      fs.mkdirSync(
-        jobDir,
-        {
-          recursive: true,
-        }
-      );
-
-      const jobData = {
-        token,
-
-        sourceUrl:
-          preparedUrl,
-
-        platform,
-
-        createdAt:
-          Date.now(),
-
-        metadata: {
-          title:
-            metadata?.title ||
-            "StreamBox Video",
-
-          thumbnail:
-            metadata?.thumbnail ||
-            null,
-
-          duration:
-            metadata?.duration ||
-            null,
-
-          width:
-            metadata?.width ||
-            null,
-
-          height:
-            metadata?.height ||
-            null,
-
-          uploader:
-            metadata?.uploader ||
-            metadata?.channel ||
-            null,
-        },
-
-        preview: {
-          url:
-            previewFormat.url,
-
-          ext:
-            previewFormat.ext ||
-            "mp4",
-
-          width:
-            previewFormat.width ||
-            metadata?.width ||
-            null,
-
-          height:
-            previewFormat.height ||
-            metadata?.height ||
-            null,
-
-          duration:
-            previewFormat.duration ||
-            metadata?.duration ||
-            null,
-
-          hasVideo:
-            String(
-              previewFormat.vcodec ||
-                ""
-            ).toLowerCase() !==
-              "none",
-
-          hasAudio:
-            String(
-              previewFormat.acodec ||
-                ""
-            ).toLowerCase() !==
-              "none",
-        },
-      };
-
-      fs.writeFileSync(
-        path.join(
-          jobDir,
-          "job.json"
-        ),
-        JSON.stringify(
-          jobData,
-          null,
-          2
-        )
-      );
 
       const processingTimeMs =
         Date.now() -
@@ -1838,26 +1549,15 @@ app.post(
       const baseUrl =
         `${req.protocol}://${req.get("host")}`;
 
-      const previewUrl =
-        `${baseUrl}/api/preview/${token}`;
-
-      const downloadUrl =
-        `${baseUrl}/api/download/${token}`;
+      const mediaUrl =
+        `${baseUrl}/api/media/${job.token}`;
 
       console.log(
-        `[PREVIEW SUCCESS] ${platform}`
+        `[SUCCESS] ${platform} completed in ${processingTimeMs}ms`
       );
 
       console.log(
-        `[TOKEN] ${token}`
-      );
-
-      console.log(
-        `[PREVIEW] ${previewUrl}`
-      );
-
-      console.log(
-        `[DOWNLOAD] ${downloadUrl}`
+        `[MEDIA] ${mediaUrl}`
       );
 
       console.log(
@@ -1867,55 +1567,46 @@ app.post(
       return res.status(200).json({
         success: true,
 
-        type:
-          "video",
-
-        status:
-          "preview_ready",
-
         platform,
 
-        token,
+        mediaUrl,
+
+        downloadUrl:
+          mediaUrl,
 
         sourceUrl:
           inputUrl,
 
         preparedUrl,
 
-        title:
-          jobData.metadata.title,
-
-        thumbnail:
-          jobData.metadata.thumbnail,
-
-        duration:
-          jobData.metadata.duration,
-
-        width:
-          jobData.metadata.width,
-
-        height:
-          jobData.metadata.height,
-
-        resolution:
-          jobData.metadata.height
-            ? `${jobData.metadata.height}p`
-            : null,
+        extension:
+          "mp4",
 
         mimeType:
           "video/mp4",
 
-        extension:
-          "mp4",
+        resolution:
+          job.height
+            ? `${job.height}p`
+            : null,
 
-        previewUrl,
+        width:
+          job.width,
 
-        downloadUrl,
+        height:
+          job.height,
 
-        // Direct preview stream URL.
-        // This is used only for preview playback.
-        streamUrl:
-          previewFormat.url,
+        title:
+          job.title,
+
+        thumbnail:
+          job.thumbnail,
+
+        duration:
+          job.duration,
+
+        fileSize:
+          job.fileSize,
 
         processingTimeMs,
       });
@@ -1927,7 +1618,7 @@ app.post(
       console.error("");
 
       console.error(
-        "[PREVIEW EXTRACTION ERROR]"
+        "[EXTRACTION ERROR]"
       );
 
       console.error(
@@ -1944,338 +1635,11 @@ app.post(
 
         error:
           error?.message ||
-          "Unable to extract video preview.",
+          "Unable to download media.",
 
         processingTimeMs,
       });
     }
-  }
-);
-
-// ============================================================
-// PREVIEW INFORMATION
-//
-// Returns the saved preview job information.
-// It does NOT download the video.
-// ============================================================
-
-app.get(
-  "/api/preview/:token",
-  (req, res) => {
-    try {
-      const token =
-        req.params.token;
-
-      const job =
-        readJob(token);
-
-      if (!job) {
-        return res.status(404).json({
-          success: false,
-
-          error:
-            "Preview expired or no longer available.",
-        });
-      }
-
-      const baseUrl =
-        `${req.protocol}://${req.get("host")}`;
-
-      return res.json({
-        success: true,
-
-        status:
-          "preview_ready",
-
-        type:
-          "video",
-
-        token,
-
-        platform:
-          job.platform,
-
-        title:
-          job.metadata?.title ||
-          "StreamBox Video",
-
-        thumbnail:
-          job.metadata?.thumbnail ||
-          null,
-
-        duration:
-          job.metadata?.duration ||
-          null,
-
-        width:
-          job.metadata?.width ||
-          null,
-
-        height:
-          job.metadata?.height ||
-          null,
-
-        streamUrl:
-          job.preview?.url ||
-          null,
-
-        downloadUrl:
-          `${baseUrl}/api/download/${token}`,
-      });
-    } catch (error) {
-      console.error(
-        "[PREVIEW ERROR]",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        error:
-          "Unable to load preview.",
-      });
-    }
-  }
-);
-
-// ============================================================
-// DOWNLOAD AFTER USER CONFIRMATION
-//
-// IMPORTANT:
-// This is the endpoint Flutter calls ONLY after
-// the user presses "Download Video".
-// ============================================================
-
-app.post(
-  "/api/download/:token",
-  async (req, res) => {
-    const started =
-      Date.now();
-
-    try {
-      const token =
-        req.params.token;
-
-      const job =
-        readJob(token);
-
-      if (!job) {
-        return res.status(404).json({
-          success: false,
-
-          error:
-            "Preview expired. Please paste the URL again.",
-        });
-      }
-
-      const jobDir =
-        path.join(
-          MEDIA_DIR,
-          token
-        );
-
-      const finalFile =
-        path.join(
-          jobDir,
-          "streambox.mp4"
-        );
-
-      // ------------------------------------------------------
-      // ALREADY DOWNLOADED
-      // ------------------------------------------------------
-
-      if (
-        fs.existsSync(
-          finalFile
-        )
-      ) {
-        const stat =
-          fs.statSync(
-            finalFile
-          );
-
-        const baseUrl =
-          `${req.protocol}://${req.get("host")}`;
-
-        return res.json({
-          success: true,
-
-          status:
-            "download_ready",
-
-          token,
-
-          platform:
-            job.platform,
-
-          title:
-            job.metadata?.title ||
-            "StreamBox Video",
-
-          fileSize:
-            stat.size,
-
-          mimeType:
-            "video/mp4",
-
-          extension:
-            "mp4",
-
-          mediaUrl:
-            `${baseUrl}/api/media/${token}`,
-
-          downloadUrl:
-            `${baseUrl}/api/media/${token}`,
-
-          processingTimeMs:
-            Date.now() -
-            started,
-        });
-      }
-
-      // ------------------------------------------------------
-      // ACTUAL DOWNLOAD
-      // ------------------------------------------------------
-
-      const result =
-        await processDownloadJob(
-          token,
-          job
-        );
-
-      const baseUrl =
-        `${req.protocol}://${req.get("host")}`;
-
-      const mediaUrl =
-        `${baseUrl}/api/media/${token}`;
-
-      console.log(
-        `[DOWNLOAD SUCCESS] ${mediaUrl}`
-      );
-
-      return res.json({
-        success: true,
-
-        status:
-          "download_ready",
-
-        token,
-
-        platform:
-          job.platform,
-
-        title:
-          result.title,
-
-        thumbnail:
-          result.thumbnail,
-
-        duration:
-          result.duration,
-
-        width:
-          result.width,
-
-        height:
-          result.height,
-
-        fileSize:
-          result.fileSize,
-
-        mimeType:
-          "video/mp4",
-
-        extension:
-          "mp4",
-
-        mediaUrl,
-
-        downloadUrl:
-          mediaUrl,
-
-        processingTimeMs:
-          Date.now() -
-          started,
-      });
-    } catch (error) {
-      console.error("");
-
-      console.error(
-        "[DOWNLOAD ERROR]"
-      );
-
-      console.error(
-        error?.message ||
-          error
-      );
-
-      console.error(
-        "============================================================"
-      );
-
-      return res.status(500).json({
-        success: false,
-
-        error:
-          error?.message ||
-          "Unable to download video.",
-
-        processingTimeMs:
-          Date.now() -
-          started,
-      });
-    }
-  }
-);
-
-// ============================================================
-// ALSO SUPPORT GET DOWNLOAD
-//
-// Useful for browsers/testing.
-// Flutter should preferably use POST.
-// ============================================================
-
-app.get(
-  "/api/download/:token",
-  async (req, res) => {
-    const token =
-      req.params.token;
-
-    const job =
-      readJob(token);
-
-    if (!job) {
-      return res.status(404).json({
-        success: false,
-
-        error:
-          "Preview expired. Please paste the URL again.",
-      });
-    }
-
-    const finalFile =
-      path.join(
-        MEDIA_DIR,
-        token,
-        "streambox.mp4"
-      );
-
-    if (
-      !fs.existsSync(
-        finalFile
-      )
-    ) {
-      return res.status(409).json({
-        success: false,
-
-        error:
-          "Video has not been downloaded yet. Use POST /api/download/:token.",
-      });
-    }
-
-    return res.redirect(
-      `/api/media/${token}`
-    );
   }
 );
 
@@ -2525,7 +1889,7 @@ app.listen(
     );
 
     console.log(
-      "              STREAMBOX BACKEND v11.0.0"
+      "             STREAMBOX BACKEND v10.0.0"
     );
 
     console.log(
@@ -2593,14 +1957,12 @@ app.listen(
     console.log("");
 
     console.log(
-      "NEW FLOW:"
+      "Architecture:"
     );
 
     console.log(
-      "URL → Metadata → Preview → User confirms → Download → MP4"
+      "URL → yt-dlp → FFmpeg → temporary MP4 → Flutter"
     );
-
-    console.log("");
 
     console.log(
       "============================================================"
@@ -2609,4 +1971,3 @@ app.listen(
     console.log("");
   }
 );
-
