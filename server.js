@@ -6,14 +6,6 @@ const os = require("os");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
 
-const {
-  igdl,
-  ttdl,
-  fbdown,
-  pinterest,
-  twitter,
-} = require("btch-downloader");
-
 const app = express();
 
 // ============================================================
@@ -25,6 +17,7 @@ const PORT = process.env.PORT || 3000;
 const EXTRACTION_TIMEOUT = 180000;
 const DOWNLOAD_TIMEOUT = 600000;
 const REDIRECT_TIMEOUT = 20000;
+const DP_TIMEOUT = 30000;
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
@@ -38,8 +31,7 @@ const FFMPEG_PATH =
   process.env.FFMPEG_PATH || "/usr/bin/ffmpeg";
 
 const DENO_PATH =
-  process.env.DENO_PATH ||
-  "/root/.deno/bin/deno";
+  process.env.DENO_PATH || "/root/.deno/bin/deno";
 
 const MEDIA_DIR =
   process.env.MEDIA_DIR ||
@@ -48,7 +40,6 @@ const MEDIA_DIR =
 const MEDIA_TTL =
   Number(process.env.MEDIA_TTL_SECONDS || 1800) * 1000;
 
-// Create media directory
 fs.mkdirSync(MEDIA_DIR, {
   recursive: true,
 });
@@ -147,12 +138,7 @@ function getPlatform(url) {
     return "twitter";
   }
 
-  if (
-    value.includes("youtube.com") ||
-    value.includes("youtu.be")
-  ) {
-    return "youtube";
-  }
+  // YouTube intentionally removed for now.
 
   return null;
 }
@@ -308,78 +294,6 @@ async function prepareUrl(platform, inputUrl) {
     return url;
   }
 
-  // ----------------------------------------------------------
-  // YOUTUBE
-  // ----------------------------------------------------------
-
-  if (platform === "youtube") {
-    try {
-      const parsed = new URL(url);
-
-      let videoId = null;
-
-      // youtu.be/VIDEO_ID
-      if (
-        parsed.hostname === "youtu.be" ||
-        parsed.hostname === "www.youtu.be"
-      ) {
-        videoId =
-          parsed.pathname
-            .split("/")
-            .filter(Boolean)[0];
-      }
-
-      // youtube.com/shorts/VIDEO_ID
-      if (
-        parsed.pathname.startsWith("/shorts/")
-      ) {
-        videoId =
-          parsed.pathname
-            .split("/")
-            .filter(Boolean)[1];
-      }
-
-      // youtube.com/embed/VIDEO_ID
-      if (
-        parsed.pathname.startsWith("/embed/")
-      ) {
-        videoId =
-          parsed.pathname
-            .split("/")
-            .filter(Boolean)[1];
-      }
-
-      // youtube.com/live/VIDEO_ID
-      if (
-        parsed.pathname.startsWith("/live/")
-      ) {
-        videoId =
-          parsed.pathname
-            .split("/")
-            .filter(Boolean)[1];
-      }
-
-      // youtube.com/watch?v=VIDEO_ID
-      if (
-        parsed.pathname === "/watch"
-      ) {
-        videoId =
-          parsed.searchParams.get("v");
-      }
-
-      if (videoId) {
-        url =
-          `https://www.youtube.com/watch?v=${videoId}`;
-
-        console.log(
-          `[PREPARED] YouTube normalized: ${url}`
-        );
-      }
-    } catch {}
-
-    return url;
-  }
-
   return url;
 }
 
@@ -398,7 +312,6 @@ function runCommand(
 
     const env = {
       ...process.env,
-
       PATH:
         `/root/.deno/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`,
     };
@@ -413,14 +326,14 @@ function runCommand(
       args,
       {
         env,
-        cwd: options.cwd || process.cwd(),
+        cwd:
+          options.cwd || process.cwd(),
         windowsHide: true,
       }
     );
 
     let stdout = "";
     let stderr = "";
-
     let finished = false;
 
     const timer = setTimeout(() => {
@@ -532,140 +445,42 @@ function getYtDlpPath() {
 function getCommonYtDlpArgs() {
   return [
     "--ignore-config",
-
     "--no-playlist",
-
     "--no-warnings",
-
     "--newline",
-
     "--retries",
     "5",
-
     "--fragment-retries",
     "5",
-
     "--extractor-retries",
     "5",
-
     "--retry-sleep",
     "1",
-
     "--user-agent",
     USER_AGENT,
   ];
 }
 
 // ============================================================
-// YOUTUBE EXTRA ARGS
-// ============================================================
-
-function getYouTubeArgs() {
-  return [
-    "--js-runtimes",
-    `deno:${DENO_PATH}`,
-
-    "--remote-components",
-    "ejs:github",
-
-    // Let yt-dlp choose its supported default client.
-    "--extractor-args",
-    "youtube:player_client=default,mweb",
-  ];
-}
-
-// ============================================================
-// EXTRACT METADATA ONLY
+// EXTRACT METADATA
 // ============================================================
 
 async function extractMetadata(
   url,
   platform
 ) {
-  const ytDlp =
-    getYtDlpPath();
+  const ytDlp = getYtDlpPath();
 
   const args = [
     ...getCommonYtDlpArgs(),
-
     "--dump-single-json",
-
     "--skip-download",
-
     "--format-sort",
     "res:1080",
-
     "--referer",
     url,
+    url,
   ];
-
- // ----------------------------------------------------------
-// YOUTUBE
-// ----------------------------------------------------------
-if (platform === "youtube") {
-  try {
-    const parsed = new URL(url);
-    let videoId = null;
-
-    // youtu.be/VIDEO_ID
-    if (
-      parsed.hostname === "youtu.be" ||
-      parsed.hostname === "www.youtu.be"
-    ) {
-      videoId = parsed.pathname
-        .split("/")
-        .filter(Boolean)[0];
-    }
-
-    // youtube.com/shorts/VIDEO_ID
-    if (parsed.pathname.startsWith("/shorts/")) {
-      videoId = parsed.pathname
-        .split("/")
-        .filter(Boolean)[1];
-    }
-
-    // youtube.com/embed/VIDEO_ID
-    if (parsed.pathname.startsWith("/embed/")) {
-      videoId = parsed.pathname
-        .split("/")
-        .filter(Boolean)[1];
-    }
-
-    // youtube.com/live/VIDEO_ID
-    if (parsed.pathname.startsWith("/live/")) {
-      videoId = parsed.pathname
-        .split("/")
-        .filter(Boolean)[1];
-    }
-
-    // youtube.com/watch?v=VIDEO_ID
-    if (parsed.pathname === "/watch") {
-      videoId = parsed.searchParams.get("v");
-    }
-
-    if (videoId) {
-      url = `https://www.youtube.com/watch?v=${videoId}`;
-
-      console.log(
-        `[PREPARED] YouTube normalized: ${url}`
-      );
-    }
-  } catch (error) {
-    console.log(
-      `[PREPARE] YouTube URL normalization failed: ${error.message}`
-    );
-  }
-
-  return url;
-}
-
-  // IMPORTANT:
-  // Do NOT force --format best here.
-  //
-  // This fixes the Pinterest error where
-  // "best" was not available.
-
-  args.push(url);
 
   try {
     const result =
@@ -694,7 +509,6 @@ if (platform === "youtube") {
 
     let json = null;
 
-    // Last JSON object is normally the metadata.
     for (
       let i = lines.length - 1;
       i >= 0;
@@ -785,7 +599,6 @@ function scoreFormat(format) {
   const fps =
     Number(format.fps || 0);
 
-  // Prefer real video.
   if (
     vcodec &&
     vcodec !== "none"
@@ -793,7 +606,6 @@ function scoreFormat(format) {
     score += 1000;
   }
 
-  // Prefer audio.
   if (
     acodec &&
     acodec !== "none"
@@ -801,12 +613,10 @@ function scoreFormat(format) {
     score += 500;
   }
 
-  // MP4 is friendlier for Android.
   if (ext === "mp4") {
     score += 400;
   }
 
-  // HLS/DASH are less desirable as direct URLs.
   if (
     protocol.includes("m3u8") ||
     protocol.includes("dash")
@@ -814,19 +624,16 @@ function scoreFormat(format) {
     score -= 200;
   }
 
-  // Resolution.
   score += Math.min(
     height,
     2160
   );
 
-  // FPS.
   score += Math.min(
     fps * 2,
     120
   );
 
-  // Avoid extremely high formats.
   if (height > 1080) {
     score -=
       (height - 1080) * 0.5;
@@ -875,84 +682,7 @@ function selectBestFormat(
       scoreFormat(a)
   );
 
-  const selected =
-    candidates[0];
-
-  return selected;
-}
-
-// ============================================================
-// DIRECT MEDIA RESULT
-// ============================================================
-
-function makeExtractionResult(
-  metadata
-) {
-  const format =
-    selectBestFormat(metadata);
-
-  if (!format) {
-    return null;
-  }
-
-  const vcodec =
-    String(
-      format.vcodec || ""
-    ).toLowerCase();
-
-  const acodec =
-    String(
-      format.acodec || ""
-    ).toLowerCase();
-
-  return {
-    mediaUrl: format.url,
-
-    extension:
-      format.ext || "mp4",
-
-    title:
-      metadata.title ||
-      "StreamBox Video",
-
-    thumbnail:
-      metadata.thumbnail ||
-      null,
-
-    duration:
-      metadata.duration ||
-      null,
-
-    width:
-      format.width ||
-      null,
-
-    height:
-      format.height ||
-      null,
-
-    hasAudio:
-      acodec &&
-      acodec !== "none",
-
-    videoCodec:
-      vcodec,
-
-    audioCodec:
-      acodec,
-
-    formatId:
-      format.format_id ||
-      null,
-
-    protocol:
-      format.protocol ||
-      null,
-
-    formatNote:
-      format.format_note ||
-      null,
-  };
+  return candidates[0];
 }
 
 // ============================================================
@@ -983,12 +713,9 @@ async function downloadWithYtDlp(
   const args = [
     ...getCommonYtDlpArgs(),
 
-    // Best video + best audio,
-    // fallback to best combined.
     "--format",
     "bv*+ba/b",
 
-    // Merge into MP4 when possible.
     "--merge-output-format",
     "mp4",
 
@@ -996,22 +723,14 @@ async function downloadWithYtDlp(
     outputTemplate,
 
     "--no-part",
-
     "--no-continue",
-
     "--newline",
 
     "--referer",
     url,
+
+    url,
   ];
-
-  if (platform === "youtube") {
-    args.push(
-      ...getYouTubeArgs()
-    );
-  }
-
-  args.push(url);
 
   try {
     const result =
@@ -1248,10 +967,6 @@ async function createMediaJob(
       `[JOB] ${token}`
     );
 
-    // --------------------------------------------------------
-    // Download
-    // --------------------------------------------------------
-
     await downloadWithYtDlp(
       url,
       platform,
@@ -1268,10 +983,6 @@ async function createMediaJob(
         "yt-dlp completed but no media file was created"
       );
     }
-
-    // --------------------------------------------------------
-    // Convert to MP4
-    // --------------------------------------------------------
 
     const finalFile =
       path.join(
@@ -1299,10 +1010,6 @@ async function createMediaJob(
       );
     }
 
-    // --------------------------------------------------------
-    // Validate
-    // --------------------------------------------------------
-
     if (
       !fs.existsSync(finalFile)
     ) {
@@ -1322,16 +1029,6 @@ async function createMediaJob(
       );
     }
 
-    const titleFile =
-      path.join(
-        jobDir,
-        "metadata.json"
-      );
-
-    // --------------------------------------------------------
-    // Metadata
-    // --------------------------------------------------------
-
     let metadata = null;
 
     try {
@@ -1342,7 +1039,10 @@ async function createMediaJob(
         );
 
       fs.writeFileSync(
-        titleFile,
+        path.join(
+          jobDir,
+          "metadata.json"
+        ),
         JSON.stringify(
           metadata,
           null,
@@ -1361,29 +1061,22 @@ async function createMediaJob(
 
     return {
       token,
-
       filePath:
         finalFile,
-
       fileSize:
         stat.size,
-
       title:
         metadata?.title ||
         "StreamBox Video",
-
       thumbnail:
         metadata?.thumbnail ||
         null,
-
       duration:
         metadata?.duration ||
         null,
-
       width:
         metadata?.width ||
         null,
-
       height:
         metadata?.height ||
         null,
@@ -1404,12 +1097,270 @@ async function createMediaJob(
 }
 
 // ============================================================
+// INSTAGRAM DP DOWNLOADER
+// ============================================================
+
+function extractInstagramUsername(inputUrl) {
+  try {
+    const parsed =
+      new URL(inputUrl);
+
+    const hostname =
+      parsed.hostname.toLowerCase();
+
+    if (
+      hostname !== "instagram.com" &&
+      hostname !== "www.instagram.com" &&
+      hostname !== "instagr.am" &&
+      hostname !== "www.instagr.am"
+    ) {
+      return null;
+    }
+
+    const parts =
+      parsed.pathname
+        .split("/")
+        .filter(Boolean);
+
+    if (parts.length !== 1) {
+      return null;
+    }
+
+    const username =
+      parts[0].trim();
+
+    // Avoid treating Instagram special pages as usernames.
+    const blocked = [
+      "accounts",
+      "about",
+      "explore",
+      "direct",
+      "reels",
+      "reel",
+      "p",
+      "tv",
+      "stories",
+      "web",
+      "developer",
+      "privacy",
+      "terms",
+    ];
+
+    if (
+      blocked.includes(
+        username.toLowerCase()
+      )
+    ) {
+      return null;
+    }
+
+    if (
+      !/^[A-Za-z0-9._]+$/.test(
+        username
+      )
+    ) {
+      return null;
+    }
+
+    return username;
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------
+// HTML ENTITY DECODING
+// ------------------------------------------------------------
+
+function decodeHtmlEntities(value) {
+  if (!value) {
+    return value;
+  }
+
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#34;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/&#38;/g, "&")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+// ------------------------------------------------------------
+// INSTAGRAM DP FETCH
+// ------------------------------------------------------------
+
+async function getInstagramProfilePicture(
+  profileUrl
+) {
+  const username =
+    extractInstagramUsername(
+      profileUrl
+    );
+
+  if (!username) {
+    throw new Error(
+      "Please provide a valid Instagram profile URL."
+    );
+  }
+
+  const url =
+    `https://www.instagram.com/${encodeURIComponent(
+      username
+    )}/`;
+
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(() => {
+      controller.abort();
+    }, DP_TIMEOUT);
+
+  try {
+    console.log(
+      `[INSTAGRAM DP] Fetching profile: @${username}`
+    );
+
+    const response =
+      await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+
+        headers: {
+          "User-Agent":
+            USER_AGENT,
+
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+
+          "Accept-Language":
+            "en-US,en;q=0.9",
+
+          "Cache-Control":
+            "no-cache",
+        },
+
+        signal:
+          controller.signal,
+      });
+
+    if (!response.ok) {
+      throw new Error(
+        `Instagram returned HTTP ${response.status}`
+      );
+    }
+
+    const html =
+      await response.text();
+
+    if (!html) {
+      throw new Error(
+        "Instagram returned an empty response."
+      );
+    }
+
+    let imageUrl = null;
+
+    // --------------------------------------------------------
+    // og:image
+    // --------------------------------------------------------
+
+    const ogImagePatterns = [
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+    ];
+
+    for (
+      const pattern of ogImagePatterns
+    ) {
+      const match =
+        html.match(pattern);
+
+      if (
+        match &&
+        match[1]
+      ) {
+        imageUrl =
+          decodeHtmlEntities(
+            match[1]
+          );
+
+        break;
+      }
+    }
+
+    // --------------------------------------------------------
+    // twitter:image fallback
+    // --------------------------------------------------------
+
+    if (!imageUrl) {
+      const twitterPatterns = [
+        /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+      ];
+
+      for (
+        const pattern of twitterPatterns
+      ) {
+        const match =
+          html.match(pattern);
+
+        if (
+          match &&
+          match[1]
+        ) {
+          imageUrl =
+            decodeHtmlEntities(
+              match[1]
+            );
+
+          break;
+        }
+      }
+    }
+
+    if (!imageUrl) {
+      throw new Error(
+        "Instagram profile picture could not be found. The profile may be private, unavailable, or Instagram may have restricted the request."
+      );
+    }
+
+    if (
+      !isValidHttpUrl(
+        imageUrl
+      )
+    ) {
+      throw new Error(
+        "Instagram returned an invalid profile picture URL."
+      );
+    }
+
+    console.log(
+      `[INSTAGRAM DP] Found profile picture for @${username}`
+    );
+
+    return {
+      username,
+      profileUrl: url,
+      imageUrl,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ============================================================
 // CLEANUP
 // ============================================================
 
 function cleanupExpiredMedia() {
   if (
-    !fs.existsSync(MEDIA_DIR)
+    !fs.existsSync(
+      MEDIA_DIR
+    )
   ) {
     return;
   }
@@ -1425,8 +1376,12 @@ function cleanupExpiredMedia() {
       }
     );
 
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
+  for (
+    const entry of entries
+  ) {
+    if (
+      !entry.isDirectory()
+    ) {
       continue;
     }
 
@@ -1484,19 +1439,22 @@ app.get(
         "online",
 
       version:
-        "8.0.0",
+        "9.0.0",
 
       architecture:
         "yt-dlp + FFmpeg + temporary MP4",
 
       platforms: [
         "instagram",
+        "instagram-dp",
         "tiktok",
         "facebook",
         "pinterest",
         "twitter",
-        "youtube",
       ],
+
+      youtube:
+        "temporarily disabled",
 
       timestamp:
         new Date().toISOString(),
@@ -1513,11 +1471,16 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
-      status: "online",
+
+      status:
+        "online",
+
       service:
         "StreamBox Backend",
+
       version:
-        "8.0.0",
+        "9.0.0",
+
       timestamp:
         new Date().toISOString(),
     });
@@ -1537,6 +1500,7 @@ app.get(
       ytDlp: {
         path:
           getYtDlpPath(),
+
         installed:
           fs.existsSync(
             getYtDlpPath()
@@ -1546,6 +1510,7 @@ app.get(
       ffmpeg: {
         path:
           FFMPEG_PATH,
+
         installed:
           fs.existsSync(
             FFMPEG_PATH
@@ -1555,6 +1520,7 @@ app.get(
       deno: {
         path:
           DENO_PATH,
+
         installed:
           fs.existsSync(
             DENO_PATH
@@ -1568,14 +1534,10 @@ app.get(
         new Date().toISOString(),
     };
 
-    // yt-dlp version
     try {
-      const ytDlp =
-        getYtDlpPath();
-
       const version =
         await runCommand(
-          ytDlp,
+          getYtDlpPath(),
           ["--version"],
           {
             timeout: 15000,
@@ -1592,7 +1554,6 @@ app.get(
         error.message;
     }
 
-    // ffmpeg version
     try {
       const ffmpeg =
         await runCommand(
@@ -1603,12 +1564,9 @@ app.get(
           }
         );
 
-      const firstLine =
+      result.ffmpeg.version =
         ffmpeg.stdout
           .split(/\r?\n/)[0];
-
-      result.ffmpeg.version =
-        firstLine;
     } catch (error) {
       result.ffmpeg.version =
         null;
@@ -1617,7 +1575,6 @@ app.get(
         error.message;
     }
 
-    // Deno version
     try {
       const deno =
         await runCommand(
@@ -1644,6 +1601,119 @@ app.get(
 );
 
 // ============================================================
+// INSTAGRAM DP API
+// ============================================================
+
+app.post(
+  "/api/instagram/dp",
+  async (req, res) => {
+    const started =
+      Date.now();
+
+    try {
+      const inputUrl =
+        cleanInputUrl(
+          req.body?.url
+        );
+
+      if (!inputUrl) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Please provide an Instagram profile URL.",
+        });
+      }
+
+      if (
+        !isValidHttpUrl(
+          inputUrl
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Invalid Instagram profile URL.",
+        });
+      }
+
+      const platform =
+        getPlatform(
+          inputUrl
+        );
+
+      if (
+        platform !==
+        "instagram"
+      ) {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Please provide a valid Instagram profile URL.",
+        });
+      }
+
+      const result =
+        await getInstagramProfilePicture(
+          inputUrl
+        );
+
+      const processingTimeMs =
+        Date.now() -
+        started;
+
+      return res.status(200).json({
+        success: true,
+
+        platform:
+          "instagram",
+
+        type:
+          "profile_picture",
+
+        username:
+          result.username,
+
+        profileUrl:
+          result.profileUrl,
+
+        imageUrl:
+          result.imageUrl,
+
+        mediaUrl:
+          result.imageUrl,
+
+        downloadUrl:
+          result.imageUrl,
+
+        mimeType:
+          "image/jpeg",
+
+        processingTimeMs,
+      });
+    } catch (error) {
+      const processingTimeMs =
+        Date.now() -
+        started;
+
+      console.error(
+        "[INSTAGRAM DP ERROR]",
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+
+        error:
+          error.message ||
+          "Unable to retrieve Instagram profile picture.",
+
+        processingTimeMs,
+      });
+    }
+  }
+);
+
+// ============================================================
 // EXTRACT GET
 // ============================================================
 
@@ -1658,7 +1728,7 @@ app.get(
 
       body: {
         url:
-          "https://www.youtube.com/watch?v=example",
+          "https://www.instagram.com/reel/example/",
       },
     });
   }
@@ -1713,7 +1783,28 @@ app.post(
         });
       }
 
+      // Instagram DP requests should use the DP endpoint.
+      if (
+        platform === "instagram"
+      ) {
+        const username =
+          extractInstagramUsername(
+            inputUrl
+          );
+
+        if (username) {
+          return res.status(400).json({
+            success: false,
+            error:
+              "This is an Instagram profile URL. Use POST /api/instagram/dp for profile pictures.",
+            endpoint:
+              "/api/instagram/dp",
+          });
+        }
+      }
+
       console.log("");
+
       console.log(
         "============================================================"
       );
@@ -1726,10 +1817,6 @@ app.post(
         `[PLATFORM] ${platform}`
       );
 
-      // ------------------------------------------------------
-      // Prepare URL
-      // ------------------------------------------------------
-
       const preparedUrl =
         await prepareUrl(
           platform,
@@ -1740,10 +1827,6 @@ app.post(
         `[PREPARED] ${preparedUrl}`
       );
 
-      // ------------------------------------------------------
-      // Server-side download
-      // ------------------------------------------------------
-
       const job =
         await createMediaJob(
           preparedUrl,
@@ -1753,10 +1836,6 @@ app.post(
       const processingTimeMs =
         Date.now() -
         started;
-
-      // ------------------------------------------------------
-      // Temporary media URL
-      // ------------------------------------------------------
 
       const baseUrl =
         `${req.protocol}://${req.get("host")}`;
@@ -1934,10 +2013,6 @@ app.get(
       const range =
         req.headers.range;
 
-      // ------------------------------------------------------
-      // Range request
-      // ------------------------------------------------------
-
       if (range) {
         const parts =
           range
@@ -1965,7 +2040,9 @@ app.get(
           Number.isNaN(start) ||
           start >= stat.size
         ) {
-          return res.status(416).end();
+          return res
+            .status(416)
+            .end();
         }
 
         const safeEnd =
@@ -2005,10 +2082,6 @@ app.get(
         return;
       }
 
-      // ------------------------------------------------------
-      // Normal request
-      // ------------------------------------------------------
-
       fs.createReadStream(
         filePath
       ).pipe(res);
@@ -2018,7 +2091,9 @@ app.get(
         error
       );
 
-      if (!res.headersSent) {
+      if (
+        !res.headersSent
+      ) {
         res.status(500).json({
           success: false,
           error:
@@ -2029,55 +2104,6 @@ app.get(
   }
 );
 
-app.get("/api/youtube-test", async (req, res) => {
-  const testUrl =
-    "https://www.youtube.com/watch?v=HPKQ2MyqDDg";
-
-  try {
-    const ytDlp = getYtDlpPath();
-
-    const args = [
-      ...getCommonYtDlpArgs(),
-
-      "--verbose",
-      "--dump-single-json",
-      "--skip-download",
-
-      "--referer",
-      testUrl,
-
-      ...getYouTubeArgs(),
-
-      testUrl,
-    ];
-
-    const result = await runCommand(
-      ytDlp,
-      args,
-      {
-        timeout: EXTRACTION_TIMEOUT,
-      }
-    );
-
-    res.json({
-      success: true,
-      message: "YouTube extraction test succeeded",
-      ytDlp,
-      deno: DENO_PATH,
-      output: result.stdout,
-      errors: result.stderr,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: "YouTube extraction test failed",
-      error: error.message,
-      stdout: error.stdout || "",
-      stderr: error.stderr || "",
-    });
-  }
-});
-
 // ============================================================
 // 404
 // ============================================================
@@ -2086,10 +2112,13 @@ app.use(
   (req, res) => {
     res.status(404).json({
       success: false,
+
       error:
         "Endpoint not found",
+
       path:
         req.path,
+
       method:
         req.method,
     });
@@ -2135,12 +2164,13 @@ app.listen(
   "0.0.0.0",
   () => {
     console.log("");
+
     console.log(
       "============================================================"
     );
 
     console.log(
-      "             STREAMBOX BACKEND v8.1.0"
+      "             STREAMBOX BACKEND v9.0.0"
     );
 
     console.log(
@@ -2172,12 +2202,17 @@ app.listen(
     );
 
     console.log("");
+
     console.log(
       "Supported:"
     );
 
     console.log(
       "✓ Instagram"
+    );
+
+    console.log(
+      "✓ Instagram DP"
     );
 
     console.log(
@@ -2197,28 +2232,21 @@ app.listen(
     );
 
     console.log(
-      "✓ YouTube Shorts"
-    );
-
-    console.log(
-      "✓ YouTube Watch"
-    );
-
-    console.log(
-      "✓ YouTube youtu.be"
-    );
-
-    console.log(
-      "✓ YouTube Live"
+      "✗ YouTube temporarily disabled"
     );
 
     console.log("");
+
     console.log(
       "Architecture:"
     );
 
     console.log(
       "URL → yt-dlp → FFmpeg → temporary MP4 → Flutter"
+    );
+
+    console.log(
+      "Instagram DP → Instagram profile → profile image URL → Flutter"
     );
 
     console.log(
