@@ -47,7 +47,10 @@ fs.mkdirSync(MEDIA_DIR, {
   recursive: true,
 });
 
-// Extraction sessions.
+// ============================================================
+// EXTRACTION SESSIONS
+// ============================================================
+
 // token -> metadata
 const extractionSessions = new Map();
 
@@ -93,7 +96,9 @@ function cleanInputUrl(value) {
 function normalizeUrl(value) {
   try {
     const url = new URL(value);
+
     url.hash = "";
+
     return url.toString();
   } catch {
     return value;
@@ -256,7 +261,7 @@ async function prepareUrl(
 }
 
 // ============================================================
-// COMMAND
+// COMMAND RUNNER
 // ============================================================
 
 function runCommand(
@@ -270,6 +275,7 @@ function runCommand(
 
     const env = {
       ...process.env,
+
       PATH:
         `/root/.deno/bin:/usr/local/bin:/usr/bin:/bin:${process.env.PATH || ""}`,
     };
@@ -279,8 +285,10 @@ function runCommand(
       args,
       {
         env,
+
         cwd:
           options.cwd || process.cwd(),
+
         windowsHide: true,
       }
     );
@@ -307,48 +315,64 @@ function runCommand(
       );
     }, timeout);
 
-    child.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
+    child.stdout.on(
+      "data",
+      (data) => {
+        stdout += data.toString();
+      }
+    );
 
-    child.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
+    child.stderr.on(
+      "data",
+      (data) => {
+        stderr += data.toString();
+      }
+    );
 
-    child.on("error", (error) => {
-      if (finished) return;
+    child.on(
+      "error",
+      (error) => {
+        if (finished) return;
 
-      finished = true;
-      clearTimeout(timer);
-      reject(error);
-    });
+        finished = true;
 
-    child.on("close", (code) => {
-      if (finished) return;
-
-      finished = true;
-      clearTimeout(timer);
-
-      if (code === 0) {
-        resolve({
-          code,
-          stdout,
-          stderr,
-        });
-      } else {
-        const error = new Error(
-          stderr.trim() ||
-            stdout.trim() ||
-            `Command failed with code ${code}`
-        );
-
-        error.code = code;
-        error.stdout = stdout;
-        error.stderr = stderr;
+        clearTimeout(timer);
 
         reject(error);
       }
-    });
+    );
+
+    child.on(
+      "close",
+      (code) => {
+        if (finished) return;
+
+        finished = true;
+
+        clearTimeout(timer);
+
+        if (code === 0) {
+          resolve({
+            code,
+            stdout,
+            stderr,
+          });
+        } else {
+          const error =
+            new Error(
+              stderr.trim() ||
+                stdout.trim() ||
+                `Command failed with code ${code}`
+            );
+
+          error.code = code;
+          error.stdout = stdout;
+          error.stderr = stderr;
+
+          reject(error);
+        }
+      }
+    );
   });
 }
 
@@ -369,7 +393,9 @@ function getYtDlpPath() {
     "/usr/bin/yt-dlp",
   ];
 
-  for (const candidate of candidates) {
+  for (
+    const candidate of candidates
+  ) {
     if (fs.existsSync(candidate)) {
       return candidate;
     }
@@ -381,17 +407,25 @@ function getYtDlpPath() {
 function getCommonYtDlpArgs() {
   return [
     "--ignore-config",
+
     "--no-playlist",
+
     "--no-warnings",
+
     "--newline",
+
     "--retries",
     "5",
+
     "--fragment-retries",
     "5",
+
     "--extractor-retries",
     "5",
+
     "--retry-sleep",
     "1",
+
     "--user-agent",
     USER_AGENT,
   ];
@@ -407,8 +441,11 @@ async function extractMetadata(url) {
 
   const args = [
     ...getCommonYtDlpArgs(),
+
     "--dump-single-json",
+
     "--skip-download",
+
     url,
   ];
 
@@ -511,15 +548,48 @@ function formatLabel(format) {
     return `${height}p`;
   }
 
-  if (
-    format?.format_note
-  ) {
+  if (format?.format_note) {
     return String(
       format.format_note
     );
   }
 
   return "Best";
+}
+
+// ============================================================
+// FORMAT SCORE
+// ============================================================
+
+function formatScore(format) {
+  let score = 0;
+
+  // Video is required.
+  if (hasVideo(format)) {
+    score += 1000;
+  }
+
+  // Prefer MP4.
+  if (
+    String(format.ext || "")
+      .toLowerCase() === "mp4"
+  ) {
+    score += 400;
+  }
+
+  // Prefer higher resolution.
+  score += Math.min(
+    formatHeight(format),
+    2160
+  );
+
+  // Audio gets only a small preference.
+  // Audio can be added separately.
+  if (hasAudio(format)) {
+    score += 100;
+  }
+
+  return score;
 }
 
 // ============================================================
@@ -541,48 +611,36 @@ function buildQualityList(metadata) {
         hasVideo(format)
     );
 
-  // Prefer formats containing audio.
-  // Then prefer MP4.
-  // Then higher resolution.
+  // Sort primarily by quality.
   formats.sort((a, b) => {
-    const audioA =
-      hasAudio(a) ? 1 : 0;
+    const heightA =
+      formatHeight(a);
 
-    const audioB =
-      hasAudio(b) ? 1 : 0;
+    const heightB =
+      formatHeight(b);
 
-    if (audioA !== audioB) {
-      return audioB - audioA;
+    if (
+      heightA !== heightB
+    ) {
+      return heightB - heightA;
     }
 
-    const mp4A =
-      String(a.ext || "")
-        .toLowerCase() === "mp4"
-        ? 1
-        : 0;
+    const scoreA =
+      formatScore(a);
 
-    const mp4B =
-      String(b.ext || "")
-        .toLowerCase() === "mp4"
-        ? 1
-        : 0;
+    const scoreB =
+      formatScore(b);
 
-    if (mp4A !== mp4B) {
-      return mp4B - mp4A;
-    }
-
-    return (
-      formatHeight(b) -
-      formatHeight(a)
-    );
+    return scoreB - scoreA;
   });
 
   // Group by height.
-  // Keep the best candidate for each resolution.
   const byHeight =
     new Map();
 
-  for (const format of formats) {
+  for (
+    const format of formats
+  ) {
     const height =
       formatHeight(format);
 
@@ -598,6 +656,7 @@ function buildQualityList(metadata) {
         height,
         format
       );
+
       continue;
     }
 
@@ -623,7 +682,9 @@ function buildQualityList(metadata) {
   const sortedHeights =
     Array.from(
       byHeight.keys()
-    ).sort((a, b) => b - a);
+    ).sort(
+      (a, b) => b - a
+    );
 
   for (
     const height of sortedHeights
@@ -631,34 +692,49 @@ function buildQualityList(metadata) {
     const format =
       byHeight.get(height);
 
-    if (!format) continue;
+    if (!format) {
+      continue;
+    }
 
     result.push({
       id:
-        String(format.format_id),
+        String(
+          format.format_id
+        ),
+
       label:
         formatLabel(format),
+
       height,
+
       width:
         Number(format.width || 0) ||
         null,
+
       extension:
         format.ext || "mp4",
+
       previewUrl:
         isHttpUrl(format.url)
           ? format.url
           : null,
+
       hasAudio:
         hasAudio(format),
+
       hasVideo:
         hasVideo(format),
+
       formatNote:
         format.format_note ||
         null,
     });
   }
 
-  // Best combined format first.
+  // ==========================================================
+  // BEST COMBINED FORMAT
+  // ==========================================================
+
   const combined =
     formats.find(
       (format) =>
@@ -672,27 +748,40 @@ function buildQualityList(metadata) {
     !result.some(
       (item) =>
         item.id ===
-        String(combined.format_id)
+        String(
+          combined.format_id
+        )
     )
   ) {
     result.unshift({
       id:
-        String(combined.format_id),
+        String(
+          combined.format_id
+        ),
+
       label:
         `${formatLabel(combined)} • Audio`,
+
       height:
         formatHeight(combined),
+
       width:
-        Number(combined.width || 0) ||
-        null,
+        Number(
+          combined.width || 0
+        ) || null,
+
       extension:
         combined.ext || "mp4",
+
       previewUrl:
         isHttpUrl(combined.url)
           ? combined.url
           : null,
+
       hasAudio: true,
+
       hasVideo: true,
+
       formatNote:
         combined.format_note ||
         null,
@@ -700,32 +789,6 @@ function buildQualityList(metadata) {
   }
 
   return result;
-}
-
-function formatScore(format) {
-  let score = 0;
-
-  if (hasVideo(format)) {
-    score += 1000;
-  }
-
-  if (hasAudio(format)) {
-    score += 500;
-  }
-
-  if (
-    String(format.ext || "")
-      .toLowerCase() === "mp4"
-  ) {
-    score += 400;
-  }
-
-  score += Math.min(
-    formatHeight(format),
-    2160
-  );
-
-  return score;
 }
 
 // ============================================================
@@ -739,7 +802,7 @@ function createToken() {
 }
 
 // ============================================================
-// EXTRACT SESSION
+// EXTRACTION SESSION
 // ============================================================
 
 function createExtractionSession(data) {
@@ -750,7 +813,9 @@ function createExtractionSession(data) {
     token,
     {
       ...data,
-      createdAt: Date.now(),
+
+      createdAt:
+        Date.now(),
     }
   );
 
@@ -766,7 +831,9 @@ function getExtractionSession(token) {
   }
 
   const session =
-    extractionSessions.get(token);
+    extractionSessions.get(
+      token
+    );
 
   if (!session) {
     return null;
@@ -785,6 +852,110 @@ function getExtractionSession(token) {
   }
 
   return session;
+}
+
+// ============================================================
+// VERIFY AUDIO STREAM
+// ============================================================
+
+async function verifyAudioStream(
+  filePath
+) {
+  try {
+    const result =
+      await runCommand(
+        FFMPEG_PATH,
+        [
+          "-v",
+          "error",
+
+          "-select_streams",
+          "a:0",
+
+          "-show_entries",
+          "stream=codec_name",
+
+          "-of",
+          "default=noprint_wrappers=1:nokey=1",
+
+          filePath,
+        ],
+        {
+          timeout: 30000,
+        }
+      );
+
+    const codec =
+      result.stdout.trim();
+
+    console.log(
+      `[AUDIO CHECK] Codec: ${
+        codec || "NONE"
+      }`
+    );
+
+    return Boolean(codec);
+  } catch (error) {
+    console.error(
+      "[AUDIO CHECK ERROR]",
+      error?.message ||
+        error
+    );
+
+    return false;
+  }
+}
+
+// ============================================================
+// VERIFY VIDEO STREAM
+// ============================================================
+
+async function verifyVideoStream(
+  filePath
+) {
+  try {
+    const result =
+      await runCommand(
+        FFMPEG_PATH,
+        [
+          "-v",
+          "error",
+
+          "-select_streams",
+          "v:0",
+
+          "-show_entries",
+          "stream=codec_name",
+
+          "-of",
+          "default=noprint_wrappers=1:nokey=1",
+
+          filePath,
+        ],
+        {
+          timeout: 30000,
+        }
+      );
+
+    const codec =
+      result.stdout.trim();
+
+    console.log(
+      `[VIDEO CHECK] Codec: ${
+        codec || "NONE"
+      }`
+    );
+
+    return Boolean(codec);
+  } catch (error) {
+    console.error(
+      "[VIDEO CHECK ERROR]",
+      error?.message ||
+        error
+    );
+
+    return false;
+  }
 }
 
 // ============================================================
@@ -820,31 +991,136 @@ async function downloadSelectedFormat(
   const ytDlp =
     getYtDlpPath();
 
-  // Use requested format when possible.
+  // ==========================================================
+  // GET SELECTED QUALITY
+  // ==========================================================
+
+  const selectedQuality =
+    session.qualities.find(
+      (quality) =>
+        String(
+          quality.id
+        ) ===
+        String(formatId)
+    );
+
+  if (!selectedQuality) {
+    throw new Error(
+      "Selected video quality is not available."
+    );
+  }
+
+  // ==========================================================
+  // FORMAT SELECTION
+  // ==========================================================
   //
-  // If it is video-only, add best available
-  // audio. If it already contains audio,
-  // yt-dlp will keep it.
-  const formatSelector =
-    `${formatId}+bestaudio/best`;
+  // Format already has audio:
+  //
+  //     selected format
+  //
+  // Video-only:
+  //
+  //     selected video + best audio
+  //
+  // Fallback:
+  //
+  //     best video + best audio
+  //
+  // ==========================================================
+
+  let formatSelector;
+
+  if (
+    selectedQuality.hasAudio
+  ) {
+    formatSelector =
+      `${formatId}/best`;
+  } else {
+    formatSelector =
+      `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
+  }
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    `[DOWNLOAD] Platform: ${session.platform}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Format: ${formatId}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Label: ${selectedQuality.label}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Video: ${selectedQuality.hasVideo}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Audio already included: ${selectedQuality.hasAudio}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Selector: ${formatSelector}`
+  );
+
+  console.log(
+    "============================================================"
+  );
 
   const args = [
     ...getCommonYtDlpArgs(),
 
+    // --------------------------------------------------------
+    // VIDEO + AUDIO
+    // --------------------------------------------------------
+
     "--format",
     formatSelector,
+
+    // --------------------------------------------------------
+    // ALWAYS MERGE INTO MP4
+    // --------------------------------------------------------
 
     "--merge-output-format",
     "mp4",
 
+    // --------------------------------------------------------
+    // FFMPEG LOCATION
+    // --------------------------------------------------------
+
+    "--ffmpeg-location",
+    FFMPEG_PATH,
+
+    // --------------------------------------------------------
+    // OUTPUT
+    // --------------------------------------------------------
+
     "--output",
     outputTemplate,
 
+    // --------------------------------------------------------
+    // DOWNLOAD CONTROL
+    // --------------------------------------------------------
+
     "--no-part",
+
     "--no-continue",
+
+    // --------------------------------------------------------
+    // REFERER
+    // --------------------------------------------------------
 
     "--referer",
     session.sourceUrl,
+
+    // --------------------------------------------------------
+    // SOURCE
+    // --------------------------------------------------------
 
     session.sourceUrl,
   ];
@@ -856,10 +1132,15 @@ async function downloadSelectedFormat(
       {
         timeout:
           DOWNLOAD_TIMEOUT,
+
         cwd:
           jobDir,
       }
     );
+
+    // ========================================================
+    // FIND DOWNLOADED FILE
+    // ========================================================
 
     const downloadedFile =
       findDownloadedFile(
@@ -871,6 +1152,14 @@ async function downloadSelectedFormat(
         "yt-dlp completed but no media file was created."
       );
     }
+
+    console.log(
+      `[DOWNLOAD] Created: ${downloadedFile}`
+    );
+
+    // ========================================================
+    // ENSURE MP4
+    // ========================================================
 
     let finalFile =
       downloadedFile;
@@ -891,6 +1180,10 @@ async function downloadSelectedFormat(
         finalFile
       );
     }
+
+    // ========================================================
+    // CHECK FILE
+    // ========================================================
 
     if (
       !fs.existsSync(
@@ -913,15 +1206,74 @@ async function downloadSelectedFormat(
       );
     }
 
+    // ========================================================
+    // VERIFY VIDEO
+    // ========================================================
+
+    const hasFinalVideo =
+      await verifyVideoStream(
+        finalFile
+      );
+
+    if (!hasFinalVideo) {
+      throw new Error(
+        "The final MP4 does not contain a video stream."
+      );
+    }
+
+    // ========================================================
+    // VERIFY AUDIO
+    // ========================================================
+
+    const hasFinalAudio =
+      await verifyAudioStream(
+        finalFile
+      );
+
+    if (!hasFinalAudio) {
+      throw new Error(
+        "The final MP4 does not contain an audio stream."
+      );
+    }
+
+    console.log(
+      "[DOWNLOAD] Video stream: OK"
+    );
+
+    console.log(
+      "[DOWNLOAD] Audio stream: OK"
+    );
+
+    console.log(
+      `[DOWNLOAD] Final size: ${stat.size} bytes`
+    );
+
+    console.log(
+      `[DOWNLOAD] Final file: ${finalFile}`
+    );
+
+    console.log(
+      "============================================================"
+    );
+
     return {
       jobToken,
+
       jobDir,
+
       filePath:
         finalFile,
+
       fileSize:
         stat.size,
     };
   } catch (error) {
+    console.error(
+      "[DOWNLOAD FAILED]",
+      error?.message ||
+        error
+    );
+
     try {
       fs.rmSync(
         jobDir,
@@ -944,7 +1296,9 @@ function findDownloadedFile(
   directory
 ) {
   if (
-    !fs.existsSync(directory)
+    !fs.existsSync(
+      directory
+    )
   ) {
     return null;
   }
@@ -959,7 +1313,9 @@ function findDownloadedFile(
   ];
 
   const candidates =
-    fs.readdirSync(directory)
+    fs.readdirSync(
+      directory
+    )
       .filter((file) =>
         extensions.some(
           (ext) =>
@@ -970,6 +1326,7 @@ function findDownloadedFile(
       )
       .map((file) => ({
         file,
+
         fullPath:
           path.join(
             directory,
@@ -1021,11 +1378,23 @@ async function normalizeToMp4(
     "-i",
     inputFile,
 
+    // --------------------------------------------------------
+    // VIDEO
+    // --------------------------------------------------------
+
     "-map",
     "0:v:0",
 
+    // --------------------------------------------------------
+    // AUDIO
+    // --------------------------------------------------------
+
     "-map",
     "0:a:0?",
+
+    // --------------------------------------------------------
+    // VIDEO CODEC
+    // --------------------------------------------------------
 
     "-c:v",
     "libx264",
@@ -1039,11 +1408,19 @@ async function normalizeToMp4(
     "-pix_fmt",
     "yuv420p",
 
+    // --------------------------------------------------------
+    // AUDIO CODEC
+    // --------------------------------------------------------
+
     "-c:a",
     "aac",
 
     "-b:a",
     "128k",
+
+    // --------------------------------------------------------
+    // MP4 OPTIMIZATION
+    // --------------------------------------------------------
 
     "-movflags",
     "+faststart",
@@ -1070,11 +1447,12 @@ async function normalizeToMp4(
     );
   }
 
-  if (
+  const stat =
     fs.statSync(
       outputFile
-    ).size <= 0
-  ) {
+    );
+
+  if (stat.size <= 0) {
     throw new Error(
       "FFmpeg created an empty MP4."
     );
@@ -1088,21 +1466,30 @@ async function normalizeToMp4(
 // ============================================================
 
 function cleanupExpiredMedia() {
+  // ----------------------------------------------------------
+  // MEDIA DIRECTORIES
+  // ----------------------------------------------------------
+
   if (
-    fs.existsSync(MEDIA_DIR)
+    fs.existsSync(
+      MEDIA_DIR
+    )
   ) {
     const now =
       Date.now();
 
     for (
-      const entry of fs.readdirSync(
-        MEDIA_DIR,
-        {
-          withFileTypes: true,
-        }
-      )
+      const entry of
+        fs.readdirSync(
+          MEDIA_DIR,
+          {
+            withFileTypes: true,
+          }
+        )
     ) {
-      if (!entry.isDirectory()) {
+      if (
+        !entry.isDirectory()
+      ) {
         continue;
       }
 
@@ -1130,10 +1517,18 @@ function cleanupExpiredMedia() {
               force: true,
             }
           );
+
+          console.log(
+            `[CLEANUP] Removed: ${directory}`
+          );
         }
       } catch {}
     }
   }
+
+  // ----------------------------------------------------------
+  // EXTRACTION SESSIONS
+  // ----------------------------------------------------------
 
   for (
     const [
@@ -1162,23 +1557,44 @@ setInterval(
 // ROOT
 // ============================================================
 
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    service:
-      "StreamBox Backend",
-    status: "online",
-    version: "11.0.0",
-    architecture:
-      "yt-dlp + FFmpeg + quality selection",
-    youtube:
-      "disabled",
-    genericLinks:
-      "yt-dlp supported public URLs",
-    timestamp:
-      new Date().toISOString(),
-  });
-});
+app.get(
+  "/",
+  (req, res) => {
+    res.json({
+      success: true,
+
+      service:
+        "StreamBox Backend",
+
+      status:
+        "online",
+
+      version:
+        "12.0.0",
+
+      architecture:
+        "yt-dlp + FFmpeg + video quality + automatic audio",
+
+      youtube:
+        "disabled",
+
+      genericLinks:
+        "yt-dlp supported public URLs",
+
+      qualitySelection:
+        "enabled",
+
+      audioMerge:
+        "enabled",
+
+      mp4Output:
+        "enabled",
+
+      timestamp:
+        new Date().toISOString(),
+    });
+  }
+);
 
 // ============================================================
 // HEALTH
@@ -1189,10 +1605,22 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
-      status: "online",
+
+      status:
+        "online",
+
       service:
         "StreamBox Backend",
-      version: "11.0.0",
+
+      version:
+        "12.0.0",
+
+      audio:
+        "enabled",
+
+      video:
+        "enabled",
+
       timestamp:
         new Date().toISOString(),
     });
@@ -1208,6 +1636,7 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
+
       message:
         "Use POST /api/extract with { url }",
     });
@@ -1225,6 +1654,10 @@ app.post(
       Date.now();
 
     try {
+      // ------------------------------------------------------
+      // INPUT
+      // ------------------------------------------------------
+
       const inputUrl =
         cleanInputUrl(
           req.body?.url
@@ -1233,10 +1666,15 @@ app.post(
       if (!inputUrl) {
         return res.status(400).json({
           success: false,
+
           error:
             "Please provide a video URL.",
         });
       }
+
+      // ------------------------------------------------------
+      // VALID URL
+      // ------------------------------------------------------
 
       if (
         !isValidHttpUrl(
@@ -1245,10 +1683,15 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           error:
             "Invalid URL.",
         });
       }
+
+      // ------------------------------------------------------
+      // YOUTUBE BLOCK
+      // ------------------------------------------------------
 
       if (
         isYouTubeUrl(
@@ -1257,21 +1700,34 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           error:
             "YouTube downloads are not supported by StreamBox.",
         });
       }
 
-      let platform =
+      // ------------------------------------------------------
+      // PLATFORM
+      // ------------------------------------------------------
+
+      const platform =
         getPlatform(
           inputUrl
         );
+
+      // ------------------------------------------------------
+      // PREPARE URL
+      // ------------------------------------------------------
 
       const preparedUrl =
         await prepareUrl(
           platform,
           inputUrl
         );
+
+      // ------------------------------------------------------
+      // CHECK REDIRECTED YOUTUBE
+      // ------------------------------------------------------
 
       if (
         isYouTubeUrl(
@@ -1280,12 +1736,16 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
+
           error:
             "YouTube downloads are not supported by StreamBox.",
         });
       }
 
-      // Instagram profile protection.
+      // ------------------------------------------------------
+      // INSTAGRAM PROFILE PROTECTION
+      // ------------------------------------------------------
+
       if (
         platform ===
         "instagram"
@@ -1319,12 +1779,12 @@ app.post(
           if (
             segments.length === 1 &&
             !blocked.has(
-              segments[0]
-                .toLowerCase()
+              segments[0].toLowerCase()
             )
           ) {
             return res.status(400).json({
               success: false,
+
               error:
                 "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
             });
@@ -1336,10 +1796,18 @@ app.post(
         `[EXTRACT] ${preparedUrl}`
       );
 
+      // ------------------------------------------------------
+      // EXTRACT METADATA
+      // ------------------------------------------------------
+
       const metadata =
         await extractMetadata(
           preparedUrl
         );
+
+      // ------------------------------------------------------
+      // BUILD QUALITIES
+      // ------------------------------------------------------
 
       const qualities =
         buildQualityList(
@@ -1354,30 +1822,54 @@ app.post(
         );
       }
 
-      // Limit the number of qualities
-      // returned to Flutter.
+      // ------------------------------------------------------
+      // LIMIT QUALITIES
+      // ------------------------------------------------------
+
       const limitedQualities =
-        qualities
-          .slice(0, 8);
+        qualities.slice(
+          0,
+          8
+        );
+
+      // ------------------------------------------------------
+      // SESSION
+      // ------------------------------------------------------
 
       const token =
         createExtractionSession({
           sourceUrl:
             preparedUrl,
+
           originalUrl:
             inputUrl,
+
           platform,
+
           metadata,
+
           qualities:
             limitedQualities,
         });
 
+      // ------------------------------------------------------
+      // BEST
+      // ------------------------------------------------------
+
       const best =
         limitedQualities[0];
+
+      // ------------------------------------------------------
+      // PROCESSING TIME
+      // ------------------------------------------------------
 
       const processingTimeMs =
         Date.now() -
         started;
+
+      // ------------------------------------------------------
+      // RESPONSE
+      // ------------------------------------------------------
 
       return res.json({
         success: true,
@@ -1432,10 +1924,12 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         error:
           friendlyYtDlpError(
             error
           ),
+
         processingTimeMs:
           Date.now() -
           started,
@@ -1452,31 +1946,53 @@ app.post(
   "/api/download",
   async (req, res) => {
     try {
+      // ------------------------------------------------------
+      // TOKEN
+      // ------------------------------------------------------
+
       const token =
         req.body?.token
           ?.toString()
           .trim();
+
+      // ------------------------------------------------------
+      // FORMAT ID
+      // ------------------------------------------------------
 
       const formatId =
         req.body?.formatId
           ?.toString()
           .trim();
 
+      // ------------------------------------------------------
+      // VALIDATE TOKEN
+      // ------------------------------------------------------
+
       if (!token) {
         return res.status(400).json({
           success: false,
+
           error:
             "Download session is missing.",
         });
       }
 
+      // ------------------------------------------------------
+      // VALIDATE FORMAT
+      // ------------------------------------------------------
+
       if (!formatId) {
         return res.status(400).json({
           success: false,
+
           error:
             "Video quality is missing.",
         });
       }
+
+      // ------------------------------------------------------
+      // SESSION
+      // ------------------------------------------------------
 
       const session =
         getExtractionSession(
@@ -1486,10 +2002,15 @@ app.post(
       if (!session) {
         return res.status(404).json({
           success: false,
+
           error:
             "Download session expired. Please extract the URL again.",
         });
       }
+
+      // ------------------------------------------------------
+      // ALLOWED FORMAT
+      // ------------------------------------------------------
 
       const allowed =
         session.qualities.some(
@@ -1503,20 +2024,29 @@ app.post(
       if (!allowed) {
         return res.status(400).json({
           success: false,
+
           error:
             "Selected video quality is no longer available.",
         });
       }
 
       console.log(
-        `[DOWNLOAD] ${session.platform} ${formatId}`
+        `[DOWNLOAD REQUEST] ${session.platform} ${formatId}`
       );
+
+      // ------------------------------------------------------
+      // DOWNLOAD
+      // ------------------------------------------------------
 
       const job =
         await downloadSelectedFormat(
           session,
           formatId
         );
+
+      // ------------------------------------------------------
+      // HEADERS
+      // ------------------------------------------------------
 
       res.setHeader(
         "Content-Type",
@@ -1537,6 +2067,10 @@ app.post(
         "Cache-Control",
         "no-store"
       );
+
+      // ------------------------------------------------------
+      // STREAM
+      // ------------------------------------------------------
 
       const stream =
         fs.createReadStream(
@@ -1562,17 +2096,23 @@ app.post(
       stream.on(
         "close",
         () => {
-          setTimeout(() => {
-            try {
-              fs.rmSync(
-                job.jobDir,
-                {
-                  recursive: true,
-                  force: true,
-                }
-              );
-            } catch {}
-          }, 5000);
+          setTimeout(
+            () => {
+              try {
+                fs.rmSync(
+                  job.jobDir,
+                  {
+                    recursive:
+                      true,
+
+                    force:
+                      true,
+                  }
+                );
+              } catch {}
+            },
+            5000
+          );
         }
       );
 
@@ -1587,8 +2127,9 @@ app.post(
       if (
         !res.headersSent
       ) {
-        res.status(500).json({
+        return res.status(500).json({
           success: false,
+
           error:
             friendlyYtDlpError(
               error
@@ -1625,34 +2166,68 @@ function friendlyYtDlpError(
   }
 
   if (
-    lower.includes("unsupported url")
+    lower.includes(
+      "unsupported url"
+    )
   ) {
     return "This website or URL is not supported.";
   }
 
   if (
-    lower.includes("age-restricted")
+    lower.includes(
+      "age-restricted"
+    )
   ) {
     return "This video is age restricted and cannot be downloaded.";
   }
 
   if (
-    lower.includes("not available")
+    lower.includes(
+      "not available"
+    )
   ) {
     return "This video is not available.";
   }
 
   if (
-    lower.includes("copyright")
+    lower.includes(
+      "copyright"
+    )
   ) {
     return "This media cannot be accessed because of a copyright restriction.";
   }
 
   if (
-    lower.includes("timed out") ||
-    lower.includes("timeout")
+    lower.includes(
+      "audio stream"
+    ) ||
+    lower.includes(
+      "does not contain an audio"
+    )
+  ) {
+    return "Audio could not be obtained for this video.";
+  }
+
+  if (
+    lower.includes(
+      "timed out"
+    ) ||
+    lower.includes(
+      "timeout"
+    )
   ) {
     return "The server took too long to process this video. Please try again.";
+  }
+
+  if (
+    lower.includes(
+      "requested format"
+    ) &&
+    lower.includes(
+      "not available"
+    )
+  ) {
+    return "The selected video quality is not available for this video.";
   }
 
   return message.length > 500
@@ -1674,6 +2249,7 @@ app.get(
       ytDlp: {
         path:
           getYtDlpPath(),
+
         installed:
           fs.existsSync(
             getYtDlpPath()
@@ -1683,6 +2259,7 @@ app.get(
       ffmpeg: {
         path:
           FFMPEG_PATH,
+
         installed:
           fs.existsSync(
             FFMPEG_PATH
@@ -1692,15 +2269,26 @@ app.get(
       deno: {
         path:
           DENO_PATH,
+
         installed:
           fs.existsSync(
             DENO_PATH
           ),
       },
 
+      audioMerge:
+        true,
+
+      mp4Output:
+        true,
+
       timestamp:
         new Date().toISOString(),
     };
+
+    // --------------------------------------------------------
+    // YT-DLP VERSION
+    // --------------------------------------------------------
 
     try {
       const version =
@@ -1708,7 +2296,8 @@ app.get(
           getYtDlpPath(),
           ["--version"],
           {
-            timeout: 15000,
+            timeout:
+              15000,
           }
         );
 
@@ -1719,13 +2308,18 @@ app.get(
         null;
     }
 
+    // --------------------------------------------------------
+    // FFMPEG VERSION
+    // --------------------------------------------------------
+
     try {
       const ffmpeg =
         await runCommand(
           FFMPEG_PATH,
           ["-version"],
           {
-            timeout: 15000,
+            timeout:
+              15000,
           }
         );
 
@@ -1737,13 +2331,18 @@ app.get(
         null;
     }
 
+    // --------------------------------------------------------
+    // DENO VERSION
+    // --------------------------------------------------------
+
     try {
       const deno =
         await runCommand(
           DENO_PATH,
           ["--version"],
           {
-            timeout: 15000,
+            timeout:
+              15000,
           }
         );
 
@@ -1767,10 +2366,15 @@ app.use(
   (req, res) => {
     res.status(404).json({
       success: false,
+
       error:
         "Endpoint not found",
-      path: req.path,
-      method: req.method,
+
+      path:
+        req.path,
+
+      method:
+        req.method,
     });
   }
 );
@@ -1799,6 +2403,7 @@ app.use(
 
     res.status(500).json({
       success: false,
+
       error:
         "Internal server error",
     });
@@ -1814,43 +2419,77 @@ app.listen(
   "0.0.0.0",
   () => {
     console.log("");
+
     console.log(
       "============================================================"
     );
+
     console.log(
-      "              STREAMBOX BACKEND v11.0.0"
+      "              STREAMBOX BACKEND v12.0.0"
     );
+
     console.log(
       "============================================================"
     );
+
     console.log(
       `Port: ${PORT}`
     );
+
     console.log(
       `Node: ${process.version}`
     );
+
     console.log(
       `yt-dlp: ${getYtDlpPath()}`
     );
+
     console.log(
       `FFmpeg: ${FFMPEG_PATH}`
     );
+
     console.log(
       `Deno: ${DENO_PATH}`
     );
+
     console.log("");
+
     console.log(
       "YouTube: DISABLED"
     );
+
     console.log(
       "Generic yt-dlp public URLs: ENABLED"
     );
+
     console.log(
       "Quality selection: ENABLED"
     );
+
+    console.log(
+      "Video + Audio: ENABLED"
+    );
+
+    console.log(
+      "Automatic audio merge: ENABLED"
+    );
+
+    console.log(
+      "MP4 output: ENABLED"
+    );
+
+    console.log(
+      "Audio verification: ENABLED"
+    );
+
+    console.log(
+      "Video verification: ENABLED"
+    );
+
     console.log(
       "Preview metadata: ENABLED"
     );
+
     console.log(
       "============================================================"
     );
