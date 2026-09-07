@@ -173,10 +173,10 @@ function getPlatform(url) {
 }
 
 // ============================================================
-// INSTAGRAM OPENGRAPH FALLBACK SCRAPER
+// INSTAGRAM OPENGRAPH & MEDIA SCRAPER
 // ============================================================
 
-async function fetchInstagramDirectUrl(targetUrl) {
+async function fetchInstagramDirectMedia(targetUrl) {
   try {
     const response = await fetch(targetUrl, {
       headers: {
@@ -187,22 +187,24 @@ async function fetchInstagramDirectUrl(targetUrl) {
     });
 
     if (!response.ok) {
-      return null;
+      return { videoUrl: null, audioUrl: null };
     }
 
     const html = await response.text();
     
-    // Search for OpenGraph video meta tag which holds the direct video CDN link
-    const match = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
-    if (match && match[1]) {
-      // Decode HTML entities if any
-      return match[1].replace(/&amp;/g, "&");
-    }
+    // Extract video URL
+    const videoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
+    const videoUrl = videoMatch && videoMatch[1] ? videoMatch[1].replace(/&amp;/g, "&") : null;
 
-    return null;
+    // Search for any secondary audio source or script payload containing audio links
+    const audioMatch = html.match(/["']audio_url["']\s*:\s*["']([^"']+)["']/i) || 
+                       html.match(/<meta\s+property="og:audio"\s+content="([^"]+)"/i);
+    const audioUrl = audioMatch && audioMatch[1] ? audioMatch[1].replace(/&amp;/g, "&") : null;
+
+    return { videoUrl, audioUrl };
   } catch (error) {
     console.error("[OG SCRAPER ERROR]", error?.message || error);
-    return null;
+    return { videoUrl: null, audioUrl: null };
   }
 }
 
@@ -967,7 +969,7 @@ async function verifyVideoStream(
 }
 
 // ============================================================
-// SERVER DOWNLOAD (FINAL INSTAGRAM PROGRESSED FIX)
+// SERVER DOWNLOAD (ROBUST DUAL-STREAM AUDIO MUX FIX)
 // ============================================================
 
 async function downloadSelectedFormat(
@@ -984,7 +986,6 @@ async function downloadSelectedFormat(
 
   let formatSelector;
   if (session.platform === "instagram") {
-    // Force yt-dlp to explicitly look for separate video and audio tracks and combine them
     formatSelector = "bestvideo+bestaudio/best";
   } else {
     const selectedQuality = session.qualities.find(
@@ -997,6 +998,7 @@ async function downloadSelectedFormat(
     
     formatSelector = selectedQuality.hasAudio ? `${formatId}/best` : `${formatId}+bestaudio/best`;
   }
+
   const args = [
     ...getCommonYtDlpArgs(),
     "-f",
@@ -1015,27 +1017,48 @@ async function downloadSelectedFormat(
   ];
 
   try {
-    // Attempt standard yt-dlp download first
     await runCommand(ytDlp, args, {
       timeout: DOWNLOAD_TIMEOUT,
       cwd: jobDir,
     });
   } catch (ytError) {
-    // If Instagram and yt-dlp fails, attempt direct OpenGraph fallback scraping
     if (session.platform === "instagram") {
       console.log("[DOWNLOAD FALLBACK] yt-dlp failed, attempting direct OpenGraph scrape...");
-      const directUrl = await fetchInstagramDirectUrl(session.sourceUrl);
+      const mediaData = await fetchInstagramDirectMedia(session.sourceUrl);
       
-      if (directUrl) {
-        const fallbackArgs = [
-          "-y",
-          "-i",
-          directUrl,
-          "-c",
-          "copy",
-          path.join(jobDir, "streambox.mp4"),
-        ];
-        
+      if (mediaData.videoUrl) {
+        let fallbackArgs;
+        const targetMp4 = path.join(jobDir, "streambox.mp4");
+
+        if (mediaData.audioUrl) {
+          // Mux separate video and audio sources directly using FFmpeg
+          fallbackArgs = [
+            "-y",
+            "-i",
+            mediaData.videoUrl,
+            "-i",
+            mediaData.audioUrl,
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0?",
+            targetMp4,
+          ];
+        } else {
+          fallbackArgs = [
+            "-y",
+            "-i",
+            mediaData.videoUrl,
+            "-c",
+            "copy",
+            targetMp4,
+          ];
+        }
+
         await runCommand(FFMPEG_PATH, fallbackArgs, {
           timeout: DOWNLOAD_TIMEOUT,
         });
@@ -1058,6 +1081,38 @@ async function downloadSelectedFormat(
   if (!downloadedFile.toLowerCase().endsWith(".mp4")) {
     finalFile = path.join(jobDir, "streambox.mp4");
     await normalizeToMp4(downloadedFile, finalFile);
+  }
+
+  // Check audio and ensure dual-stream injection if missing on Instagram reels
+  const hasAudio = await verifyAudioStream(finalFile);
+  if (!hasAudio && session.platform === "instagram") {
+    console.log("[AUDIO FIX] Secondary injection pass for Instagram audio track...");
+    const mediaData = await fetchInstagramDirectMedia(session.sourceUrl);
+    if (mediaData.audioUrl) {
+      const fixedFile = path.join(jobDir, "streambox_fixed.mp4");
+      const fixArgs = [
+        "-y",
+        "-i",
+        finalFile,
+        "-i",
+        mediaData.audioUrl,
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0?",
+        fixedFile,
+      ];
+      try {
+        await runCommand(FFMPEG_PATH, fixArgs, { timeout: DOWNLOAD_TIMEOUT });
+        if (fs.existsSync(fixedFile) && fs.statSync(fixedFile).size > 0) {
+          finalFile = fixedFile;
+        }
+      } catch {}
+    }
   }
 
   const stat = fs.statSync(finalFile);
