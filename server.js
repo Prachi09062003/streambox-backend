@@ -584,7 +584,6 @@ function formatScore(format) {
   );
 
   // Audio gets only a small preference.
-  // Audio can be added separately.
   if (hasAudio(format)) {
     score += 100;
   }
@@ -1011,34 +1010,10 @@ async function downloadSelectedFormat(
   }
 
   // ==========================================================
-  // FORMAT SELECTION
+  // FORMAT SELECTION (UPDATED FIX: ALWAYS MERGE AUDIO)
   // ==========================================================
-  //
-  // Format already has audio:
-  //
-  //     selected format
-  //
-  // Video-only:
-  //
-  //     selected video + best audio
-  //
-  // Fallback:
-  //
-  //     best video + best audio
-  //
-  // ==========================================================
-
-  let formatSelector;
-
-  if (
-    selectedQuality.hasAudio
-  ) {
-    formatSelector =
-      `${formatId}/best`;
-  } else {
-    formatSelector =
-      `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
-  }
+  
+  let formatSelector = `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
 
   console.log(
     "============================================================"
@@ -1054,14 +1029,6 @@ async function downloadSelectedFormat(
 
   console.log(
     `[DOWNLOAD] Label: ${selectedQuality.label}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Video: ${selectedQuality.hasVideo}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Audio already included: ${selectedQuality.hasAudio}`
   );
 
   console.log(
@@ -1466,10 +1433,6 @@ async function normalizeToMp4(
 // ============================================================
 
 function cleanupExpiredMedia() {
-  // ----------------------------------------------------------
-  // MEDIA DIRECTORIES
-  // ----------------------------------------------------------
-
   if (
     fs.existsSync(
       MEDIA_DIR
@@ -1526,10 +1489,6 @@ function cleanupExpiredMedia() {
     }
   }
 
-  // ----------------------------------------------------------
-  // EXTRACTION SESSIONS
-  // ----------------------------------------------------------
-
   for (
     const [
       token,
@@ -1570,7 +1529,7 @@ app.get(
         "online",
 
       version:
-        "12.0.0",
+        "12.0.1",
 
       architecture:
         "yt-dlp + FFmpeg + video quality + automatic audio",
@@ -1613,7 +1572,7 @@ app.get(
         "StreamBox Backend",
 
       version:
-        "12.0.0",
+        "12.0.1",
 
       audio:
         "enabled",
@@ -1654,10 +1613,6 @@ app.post(
       Date.now();
 
     try {
-      // ------------------------------------------------------
-      // INPUT
-      // ------------------------------------------------------
-
       const inputUrl =
         cleanInputUrl(
           req.body?.url
@@ -1672,10 +1627,6 @@ app.post(
         });
       }
 
-      // ------------------------------------------------------
-      // VALID URL
-      // ------------------------------------------------------
-
       if (
         !isValidHttpUrl(
           inputUrl
@@ -1689,10 +1640,6 @@ app.post(
         });
       }
 
-      // ------------------------------------------------------
-      // YOUTUBE BLOCK
-      // ------------------------------------------------------
-
       if (
         isYouTubeUrl(
           inputUrl
@@ -1706,28 +1653,16 @@ app.post(
         });
       }
 
-      // ------------------------------------------------------
-      // PLATFORM
-      // ------------------------------------------------------
-
       const platform =
         getPlatform(
           inputUrl
         );
-
-      // ------------------------------------------------------
-      // PREPARE URL
-      // ------------------------------------------------------
 
       const preparedUrl =
         await prepareUrl(
           platform,
           inputUrl
         );
-
-      // ------------------------------------------------------
-      // CHECK REDIRECTED YOUTUBE
-      // ------------------------------------------------------
 
       if (
         isYouTubeUrl(
@@ -1741,10 +1676,6 @@ app.post(
             "YouTube downloads are not supported by StreamBox.",
         });
       }
-
-      // ------------------------------------------------------
-      // INSTAGRAM PROFILE PROTECTION
-      // ------------------------------------------------------
 
       if (
         platform ===
@@ -1796,18 +1727,10 @@ app.post(
         `[EXTRACT] ${preparedUrl}`
       );
 
-      // ------------------------------------------------------
-      // EXTRACT METADATA
-      // ------------------------------------------------------
-
       const metadata =
         await extractMetadata(
           preparedUrl
         );
-
-      // ------------------------------------------------------
-      // BUILD QUALITIES
-      // ------------------------------------------------------
 
       const qualities =
         buildQualityList(
@@ -1822,19 +1745,11 @@ app.post(
         );
       }
 
-      // ------------------------------------------------------
-      // LIMIT QUALITIES
-      // ------------------------------------------------------
-
       const limitedQualities =
         qualities.slice(
           0,
           8
         );
-
-      // ------------------------------------------------------
-      // SESSION
-      // ------------------------------------------------------
 
       const token =
         createExtractionSession({
@@ -1852,24 +1767,12 @@ app.post(
             limitedQualities,
         });
 
-      // ------------------------------------------------------
-      // BEST
-      // ------------------------------------------------------
-
       const best =
         limitedQualities[0];
-
-      // ------------------------------------------------------
-      // PROCESSING TIME
-      // ------------------------------------------------------
 
       const processingTimeMs =
         Date.now() -
         started;
-
-      // ------------------------------------------------------
-      // RESPONSE
-      // ------------------------------------------------------
 
       return res.json({
         success: true,
@@ -1946,27 +1849,15 @@ app.post(
   "/api/download",
   async (req, res) => {
     try {
-      // ------------------------------------------------------
-      // TOKEN
-      // ------------------------------------------------------
-
       const token =
         req.body?.token
           ?.toString()
           .trim();
 
-      // ------------------------------------------------------
-      // FORMAT ID
-      // ------------------------------------------------------
-
       const formatId =
         req.body?.formatId
           ?.toString()
           .trim();
-
-      // ------------------------------------------------------
-      // VALIDATE TOKEN
-      // ------------------------------------------------------
 
       if (!token) {
         return res.status(400).json({
@@ -1977,10 +1868,6 @@ app.post(
         });
       }
 
-      // ------------------------------------------------------
-      // VALIDATE FORMAT
-      // ------------------------------------------------------
-
       if (!formatId) {
         return res.status(400).json({
           success: false,
@@ -1989,10 +1876,6 @@ app.post(
             "Video quality is missing.",
         });
       }
-
-      // ------------------------------------------------------
-      // SESSION
-      // ------------------------------------------------------
 
       const session =
         getExtractionSession(
@@ -2007,10 +1890,6 @@ app.post(
             "Download session expired. Please extract the URL again.",
         });
       }
-
-      // ------------------------------------------------------
-      // ALLOWED FORMAT
-      // ------------------------------------------------------
 
       const allowed =
         session.qualities.some(
@@ -2034,19 +1913,11 @@ app.post(
         `[DOWNLOAD REQUEST] ${session.platform} ${formatId}`
       );
 
-      // ------------------------------------------------------
-      // DOWNLOAD
-      // ------------------------------------------------------
-
       const job =
         await downloadSelectedFormat(
           session,
           formatId
         );
-
-      // ------------------------------------------------------
-      // HEADERS
-      // ------------------------------------------------------
 
       res.setHeader(
         "Content-Type",
@@ -2067,10 +1938,6 @@ app.post(
         "Cache-Control",
         "no-store"
       );
-
-      // ------------------------------------------------------
-      // STREAM
-      // ------------------------------------------------------
 
       const stream =
         fs.createReadStream(
@@ -2286,10 +2153,6 @@ app.get(
         new Date().toISOString(),
     };
 
-    // --------------------------------------------------------
-    // YT-DLP VERSION
-    // --------------------------------------------------------
-
     try {
       const version =
         await runCommand(
@@ -2307,10 +2170,6 @@ app.get(
       result.ytDlp.version =
         null;
     }
-
-    // --------------------------------------------------------
-    // FFMPEG VERSION
-    // --------------------------------------------------------
 
     try {
       const ffmpeg =
@@ -2330,10 +2189,6 @@ app.get(
       result.ffmpeg.version =
         null;
     }
-
-    // --------------------------------------------------------
-    // DENO VERSION
-    // --------------------------------------------------------
 
     try {
       const deno =
@@ -2425,7 +2280,7 @@ app.listen(
     );
 
     console.log(
-      "              STREAMBOX BACKEND v12.0.0"
+      "              STREAMBOX BACKEND v12.0.1"
     );
 
     console.log(
