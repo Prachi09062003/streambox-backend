@@ -977,17 +977,11 @@ async function downloadSelectedFormat(
     );
   }
 
-  // Robust format selector: For Instagram or format IDs containing dash tags, 
-  // use height matching or fallback to best combined progressive streams.
+  // Force single-file progressive download for Instagram to avoid audio-stripping bugs
   let formatSelector;
   
   if (session.platform === "instagram") {
-    const height = selectedQuality.height;
-    if (height && height > 0) {
-      formatSelector = `bestvideo[height=${height}]+bestaudio/best[height=${height}]/best`;
-    } else {
-      formatSelector = `best`;
-    }
+    formatSelector = "best/bv*+ba/b";
   } else if (selectedQuality.hasAudio) {
     formatSelector = `${formatId}/best`;
   } else {
