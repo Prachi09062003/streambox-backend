@@ -986,8 +986,8 @@ async function downloadSelectedFormat(
 
   let formatSelector;
   if (session.platform === "instagram") {
-    // Standard robust selector to prevent heavy processing stalls
-    formatSelector = "best/bestvideo+bestaudio";
+    // Explicitly demand best video combined with best audio for Instagram
+    formatSelector = "bestvideo+bestaudio/best";
   } else {
     const selectedQuality = session.qualities.find(
       (quality) => String(quality.id) === String(formatId)
@@ -1017,9 +1017,8 @@ async function downloadSelectedFormat(
     session.sourceUrl,
   ];
 
-  // Execute yt-dlp with a clear timeout boundary to prevent 502 gateway crashes
   await runCommand(ytDlp, args, {
-    timeout: 120000, // 2 minutes max
+    timeout: 120000,
     cwd: jobDir,
   });
 
@@ -1031,9 +1030,38 @@ async function downloadSelectedFormat(
 
   let finalFile = downloadedFile;
 
-  if (!downloadedFile.toLowerCase().endsWith(".mp4")) {
-    finalFile = path.join(jobDir, "streambox.mp4");
-    await normalizeToMp4(downloadedFile, finalFile);
+  // Force FFmpeg normalization to guarantee audio mapping into the final MP4 container
+  const normalizedFile = path.join(jobDir, "streambox_final.mp4");
+  const normalizeArgs = [
+    "-y",
+    "-i",
+    downloadedFile,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a?", // Maps audio stream if present without crashing if missing
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "23",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-movflags",
+    "+faststart",
+    normalizedFile,
+  ];
+
+  try {
+    await runCommand(FFMPEG_PATH, normalizeArgs, { timeout: 60000 });
+    if (fs.existsSync(normalizedFile) && fs.statSync(normalizedFile).size > 0) {
+      finalFile = normalizedFile;
+    }
+  } catch (normErr) {
+    console.error("[NORMALIZATION ERROR]", normErr?.message || normErr);
   }
 
   const stat = fs.statSync(finalFile);
