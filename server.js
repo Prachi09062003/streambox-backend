@@ -30,6 +30,10 @@ const FFMPEG_PATH =
   process.env.FFMPEG_PATH ||
   "/usr/bin/ffmpeg";
 
+const FFPROBE_PATH =
+  process.env.FFPROBE_PATH ||
+  "/usr/bin/ffprobe";
+
 const DENO_PATH =
   process.env.DENO_PATH ||
   "/root/.deno/bin/deno";
@@ -854,7 +858,7 @@ function getExtractionSession(token) {
 }
 
 // ============================================================
-// VERIFY AUDIO STREAM
+// VERIFY AUDIO STREAM (FFPROBE)
 // ============================================================
 
 async function verifyAudioStream(
@@ -863,16 +867,16 @@ async function verifyAudioStream(
   try {
     const result =
       await runCommand(
-        FFMPEG_PATH,
+        FFPROBE_PATH,
         [
           "-v",
           "error",
           "-i",
           filePath,
-          "-show_entries",
-          "stream=codec_name",
           "-select_streams",
           "a:0",
+          "-show_entries",
+          "stream=codec_name",
           "-of",
           "default=noprint_wrappers=1:nokey=1",
         ],
@@ -903,7 +907,7 @@ async function verifyAudioStream(
 }
 
 // ============================================================
-// VERIFY VIDEO STREAM
+// VERIFY VIDEO STREAM (FFPROBE)
 // ============================================================
 
 async function verifyVideoStream(
@@ -912,16 +916,16 @@ async function verifyVideoStream(
   try {
     const result =
       await runCommand(
-        FFMPEG_PATH,
+        FFPROBE_PATH,
         [
           "-v",
           "error",
           "-i",
           filePath,
-          "-show_entries",
-          "stream=codec_name",
           "-select_streams",
           "v:0",
+          "-show_entries",
+          "stream=codec_name",
           "-of",
           "default=noprint_wrappers=1:nokey=1",
         ],
@@ -1004,10 +1008,20 @@ async function downloadSelectedFormat(
   }
 
   // ==========================================================
-  // FORMAT SELECTION (UPDATED FIX: ALWAYS MERGE AUDIO)
+  // FORMAT SELECTION
   // ==========================================================
-  
-  let formatSelector = `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
+
+  let formatSelector;
+
+  if (
+    selectedQuality.hasAudio
+  ) {
+    formatSelector =
+      `${formatId}/best`;
+  } else {
+    formatSelector =
+      `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
+  }
 
   console.log(
     "============================================================"
@@ -1023,6 +1037,14 @@ async function downloadSelectedFormat(
 
   console.log(
     `[DOWNLOAD] Label: ${selectedQuality.label}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Video: ${selectedQuality.hasVideo}`
+  );
+
+  console.log(
+    `[DOWNLOAD] Audio already included: ${selectedQuality.hasAudio}`
   );
 
   console.log(
@@ -1526,7 +1548,7 @@ app.get(
         "12.0.1",
 
       architecture:
-        "yt-dlp + FFmpeg + video quality + automatic audio",
+        "yt-dlp + FFmpeg + ffprobe + video quality + automatic audio",
 
       youtube:
         "disabled",
@@ -2127,6 +2149,16 @@ app.get(
           ),
       },
 
+      ffprobe: {
+        path:
+          FFPROBE_PATH,
+
+        installed:
+          fs.existsSync(
+            FFPROBE_PATH
+          ),
+      },
+
       deno: {
         path:
           DENO_PATH,
@@ -2181,6 +2213,25 @@ app.get(
           .split(/\r?\n/)[0];
     } catch (error) {
       result.ffmpeg.version =
+        null;
+    }
+
+    try {
+      const ffprobe =
+        await runCommand(
+          FFPROBE_PATH,
+          ["-version"],
+          {
+            timeout:
+              15000,
+          }
+        );
+
+      result.ffprobe.version =
+        ffprobe.stdout
+          .split(/\r?\n/)[0];
+    } catch (error) {
+      result.ffprobe.version =
         null;
     }
 
@@ -2295,6 +2346,10 @@ app.listen(
 
     console.log(
       `FFmpeg: ${FFMPEG_PATH}`
+    );
+
+    console.log(
+      `ffprobe: ${FFPROBE_PATH}`
     );
 
     console.log(
