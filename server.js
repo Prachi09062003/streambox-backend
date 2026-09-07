@@ -867,17 +867,14 @@ async function verifyAudioStream(
         [
           "-v",
           "error",
-
-          "-select_streams",
-          "a:0",
-
+          "-i",
+          filePath,
           "-show_entries",
           "stream=codec_name",
-
+          "-select_streams",
+          "a:0",
           "-of",
           "default=noprint_wrappers=1:nokey=1",
-
-          filePath,
         ],
         {
           timeout: 30000,
@@ -919,17 +916,14 @@ async function verifyVideoStream(
         [
           "-v",
           "error",
-
-          "-select_streams",
-          "v:0",
-
+          "-i",
+          filePath,
           "-show_entries",
           "stream=codec_name",
-
+          "-select_streams",
+          "v:0",
           "-of",
           "default=noprint_wrappers=1:nokey=1",
-
-          filePath,
         ],
         {
           timeout: 30000,
