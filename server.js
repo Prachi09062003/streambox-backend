@@ -173,6 +173,40 @@ function getPlatform(url) {
 }
 
 // ============================================================
+// INSTAGRAM OPENGRAPH FALLBACK SCRAPER
+// ============================================================
+
+async function fetchInstagramDirectUrl(targetUrl) {
+  try {
+    const response = await fetch(targetUrl, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const html = await response.text();
+    
+    // Search for OpenGraph video meta tag which holds the direct video CDN link
+    const match = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
+    if (match && match[1]) {
+      // Decode HTML entities if any
+      return match[1].replace(/&amp;/g, "&");
+    }
+
+    return null;
+  } catch (error) {
+    console.error("[OG SCRAPER ERROR]", error?.message || error);
+    return null;
+  }
+}
+
+// ============================================================
 // REDIRECT
 // ============================================================
 
@@ -940,178 +974,103 @@ async function downloadSelectedFormat(
   session,
   formatId
 ) {
-  const jobToken =
-    createToken();
+  const jobToken = createToken();
+  const jobDir = path.join(MEDIA_DIR, jobToken);
 
-  const jobDir =
-    path.join(
-      MEDIA_DIR,
-      jobToken
-    );
+  fs.mkdirSync(jobDir, { recursive: true });
 
-  fs.mkdirSync(
-    jobDir,
-    {
-      recursive: true,
-    }
-  );
+  const outputTemplate = path.join(jobDir, "streambox.%(ext)s");
+  const ytDlp = getYtDlpPath();
 
-  const outputTemplate =
-    path.join(
-      jobDir,
-      "streambox.%(ext)s"
-    );
-
-  const ytDlp =
-    getYtDlpPath();
-
-  const selectedQuality =
-    session.qualities.find(
-      (quality) =>
-        String(quality.id) === String(formatId)
-    );
-
-  if (!selectedQuality) {
-    throw new Error(
-      "Selected video quality is not available."
-    );
-  }
-
-  // Instagram fix: Use generic 'best' format to download a complete multiplexed video file directly
   let formatSelector;
-  
   if (session.platform === "instagram") {
     formatSelector = "best";
-  } else if (selectedQuality.hasAudio) {
-    formatSelector = `${formatId}/best`;
   } else {
-    formatSelector = `${formatId}+bestaudio/best`;
+    const selectedQuality = session.qualities.find(
+      (quality) => String(quality.id) === String(formatId)
+    );
+    
+    if (!selectedQuality) {
+      throw new Error("Selected video quality is not available.");
+    }
+    
+    formatSelector = selectedQuality.hasAudio ? `${formatId}/best` : `${formatId}+bestaudio/best`;
   }
-
-  console.log(
-    "============================================================"
-  );
-  console.log(`[DOWNLOAD] Platform: ${session.platform}`);
-  console.log(`[DOWNLOAD] Format ID: ${formatId}`);
-  console.log(`[DOWNLOAD] Selector: ${formatSelector}`);
-  console.log(
-    "============================================================"
-  );
 
   const args = [
     ...getCommonYtDlpArgs(),
-
     "-f",
     formatSelector,
-
     "--merge-output-format",
     "mp4",
-
     "--ffmpeg-location",
     FFMPEG_PATH,
-
     "--output",
     outputTemplate,
-
     "--no-part",
     "--no-continue",
-
     "--referer",
     session.sourceUrl,
-
     session.sourceUrl,
   ];
 
   try {
-    await runCommand(
-      ytDlp,
-      args,
-      {
-        timeout: DOWNLOAD_TIMEOUT,
-        cwd: jobDir,
+    // Attempt standard yt-dlp download first
+    await runCommand(ytDlp, args, {
+      timeout: DOWNLOAD_TIMEOUT,
+      cwd: jobDir,
+    });
+  } catch (ytError) {
+    // If Instagram and yt-dlp fails, attempt direct OpenGraph fallback scraping
+    if (session.platform === "instagram") {
+      console.log("[DOWNLOAD FALLBACK] yt-dlp failed, attempting direct OpenGraph scrape...");
+      const directUrl = await fetchInstagramDirectUrl(session.sourceUrl);
+      
+      if (directUrl) {
+        const fallbackArgs = [
+          "-y",
+          "-i",
+          directUrl,
+          "-c",
+          "copy",
+          path.join(jobDir, "streambox.mp4"),
+        ];
+        
+        await runCommand(FFMPEG_PATH, fallbackArgs, {
+          timeout: DOWNLOAD_TIMEOUT,
+        });
+      } else {
+        throw ytError;
       }
-    );
-
-    const downloadedFile =
-      findDownloadedFile(jobDir);
-
-    if (!downloadedFile) {
-      throw new Error(
-        "yt-dlp completed but no media file was created."
-      );
+    } else {
+      throw ytError;
     }
-
-    let finalFile = downloadedFile;
-
-    if (
-      !downloadedFile
-        .toLowerCase()
-        .endsWith(".mp4")
-    ) {
-      finalFile =
-        path.join(
-          jobDir,
-          "streambox.mp4"
-        );
-
-      await normalizeToMp4(
-        downloadedFile,
-        finalFile
-      );
-    }
-
-    if (!fs.existsSync(finalFile)) {
-      throw new Error(
-        "Final MP4 file was not created."
-      );
-    }
-
-    const stat =
-      fs.statSync(finalFile);
-
-    if (stat.size <= 0) {
-      throw new Error(
-        "Final video is empty."
-      );
-    }
-
-    const hasFinalVideo =
-      await verifyVideoStream(finalFile);
-
-    if (!hasFinalVideo) {
-      throw new Error(
-        "The final MP4 does not contain a video stream."
-      );
-    }
-
-    const hasFinalAudio =
-      await verifyAudioStream(finalFile);
-
-    if (!hasFinalAudio) {
-      throw new Error(
-        "The final MP4 does not contain an audio stream."
-      );
-    }
-
-    return {
-      jobToken,
-      jobDir,
-      filePath: finalFile,
-      fileSize: stat.size,
-    };
-  } catch (error) {
-    try {
-      fs.rmSync(
-        jobDir,
-        {
-          recursive: true,
-          force: true,
-        }
-      );
-    } catch {}
-
-    throw error;
   }
+
+  const downloadedFile = findDownloadedFile(jobDir);
+
+  if (!downloadedFile) {
+    throw new Error("Completed but no media file was created.");
+  }
+
+  let finalFile = downloadedFile;
+
+  if (!downloadedFile.toLowerCase().endsWith(".mp4")) {
+    finalFile = path.join(jobDir, "streambox.mp4");
+    await normalizeToMp4(downloadedFile, finalFile);
+  }
+
+  const stat = fs.statSync(finalFile);
+  if (stat.size <= 0) {
+    throw new Error("Final video is empty.");
+  }
+
+  return {
+    jobToken,
+    jobDir,
+    filePath: finalFile,
+    fileSize: stat.size,
+  };
 }
 
 // ============================================================
