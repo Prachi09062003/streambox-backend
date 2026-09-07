@@ -55,7 +55,6 @@ fs.mkdirSync(MEDIA_DIR, {
 // EXTRACTION SESSIONS
 // ============================================================
 
-// token -> metadata
 const extractionSessions = new Map();
 
 // ============================================================
@@ -561,19 +560,13 @@ function formatLabel(format) {
   return "Best";
 }
 
-// ============================================================
-// FORMAT SCORE
-// ============================================================
-
 function formatScore(format) {
   let score = 0;
 
-  // Video is required.
   if (hasVideo(format)) {
     score += 1000;
   }
 
-  // Prefer MP4.
   if (
     String(format.ext || "")
       .toLowerCase() === "mp4"
@@ -581,13 +574,11 @@ function formatScore(format) {
     score += 400;
   }
 
-  // Prefer higher resolution.
   score += Math.min(
     formatHeight(format),
     2160
   );
 
-  // Audio gets only a small preference.
   if (hasAudio(format)) {
     score += 100;
   }
@@ -614,7 +605,6 @@ function buildQualityList(metadata) {
         hasVideo(format)
     );
 
-  // Sort primarily by quality.
   formats.sort((a, b) => {
     const heightA =
       formatHeight(a);
@@ -637,7 +627,6 @@ function buildQualityList(metadata) {
     return scoreB - scoreA;
   });
 
-  // Group by height.
   const byHeight =
     new Map();
 
@@ -734,10 +723,6 @@ function buildQualityList(metadata) {
     });
   }
 
-  // ==========================================================
-  // BEST COMBINED FORMAT
-  // ==========================================================
-
   const combined =
     formats.find(
       (format) =>
@@ -795,7 +780,7 @@ function buildQualityList(metadata) {
 }
 
 // ============================================================
-// TOKEN
+// TOKEN & SESSIONS
 // ============================================================
 
 function createToken() {
@@ -803,10 +788,6 @@ function createToken() {
     .randomBytes(24)
     .toString("hex");
 }
-
-// ============================================================
-// EXTRACTION SESSION
-// ============================================================
 
 function createExtractionSession(data) {
   const token =
@@ -858,7 +839,7 @@ function getExtractionSession(token) {
 }
 
 // ============================================================
-// VERIFY AUDIO STREAM (FFPROBE)
+// VERIFY STREAMS (FFPROBE)
 // ============================================================
 
 async function verifyAudioStream(
@@ -906,10 +887,6 @@ async function verifyAudioStream(
   }
 }
 
-// ============================================================
-// VERIFY VIDEO STREAM (FFPROBE)
-// ============================================================
-
 async function verifyVideoStream(
   filePath
 ) {
@@ -956,7 +933,7 @@ async function verifyVideoStream(
 }
 
 // ============================================================
-// SERVER DOWNLOAD
+// SERVER DOWNLOAD (ROBUST INSTAGRAM & GENERAL FIX)
 // ============================================================
 
 async function downloadSelectedFormat(
@@ -988,17 +965,10 @@ async function downloadSelectedFormat(
   const ytDlp =
     getYtDlpPath();
 
-  // ==========================================================
-  // GET SELECTED QUALITY
-  // ==========================================================
-
   const selectedQuality =
     session.qualities.find(
       (quality) =>
-        String(
-          quality.id
-        ) ===
-        String(formatId)
+        String(quality.id) === String(formatId)
     );
 
   if (!selectedQuality) {
@@ -1007,51 +977,29 @@ async function downloadSelectedFormat(
     );
   }
 
-  // ==========================================================
-  // FORMAT SELECTION
-  // ==========================================================
-
- let formatSelector;
-
-if (
-  selectedQuality.hasAudio
-) {
-  formatSelector =
-    `${formatId}/best`;
-} else {
-  // Relax the codec constraint to grab any available audio stream or fallback to best combo
-  formatSelector =
-    `${formatId}+bestaudio/bestvideo+bestaudio/best`;
-}
+  // Robust format selector: For Instagram or format IDs containing dash tags, 
+  // use height matching or fallback to best combined progressive streams.
+  let formatSelector;
+  
+  if (session.platform === "instagram") {
+    const height = selectedQuality.height;
+    if (height && height > 0) {
+      formatSelector = `bestvideo[height=${height}]+bestaudio/best[height=${height}]/best`;
+    } else {
+      formatSelector = `best`;
+    }
+  } else if (selectedQuality.hasAudio) {
+    formatSelector = `${formatId}/best`;
+  } else {
+    formatSelector = `${formatId}+bestaudio/best`;
+  }
 
   console.log(
     "============================================================"
   );
-
-  console.log(
-    `[DOWNLOAD] Platform: ${session.platform}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Format: ${formatId}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Label: ${selectedQuality.label}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Video: ${selectedQuality.hasVideo}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Audio already included: ${selectedQuality.hasAudio}`
-  );
-
-  console.log(
-    `[DOWNLOAD] Selector: ${formatSelector}`
-  );
-
+  console.log(`[DOWNLOAD] Platform: ${session.platform}`);
+  console.log(`[DOWNLOAD] Format ID: ${formatId}`);
+  console.log(`[DOWNLOAD] Selector: ${formatSelector}`);
   console.log(
     "============================================================"
   );
@@ -1059,52 +1007,23 @@ if (
   const args = [
     ...getCommonYtDlpArgs(),
 
-    // --------------------------------------------------------
-    // VIDEO + AUDIO
-    // --------------------------------------------------------
-
-    "--format",
+    "-f",
     formatSelector,
-
-    // --------------------------------------------------------
-    // ALWAYS MERGE INTO MP4
-    // --------------------------------------------------------
 
     "--merge-output-format",
     "mp4",
 
-    // --------------------------------------------------------
-    // FFMPEG LOCATION
-    // --------------------------------------------------------
-
     "--ffmpeg-location",
     FFMPEG_PATH,
-
-    // --------------------------------------------------------
-    // OUTPUT
-    // --------------------------------------------------------
 
     "--output",
     outputTemplate,
 
-    // --------------------------------------------------------
-    // DOWNLOAD CONTROL
-    // --------------------------------------------------------
-
     "--no-part",
-
     "--no-continue",
-
-    // --------------------------------------------------------
-    // REFERER
-    // --------------------------------------------------------
 
     "--referer",
     session.sourceUrl,
-
-    // --------------------------------------------------------
-    // SOURCE
-    // --------------------------------------------------------
 
     session.sourceUrl,
   ];
@@ -1114,22 +1033,13 @@ if (
       ytDlp,
       args,
       {
-        timeout:
-          DOWNLOAD_TIMEOUT,
-
-        cwd:
-          jobDir,
+        timeout: DOWNLOAD_TIMEOUT,
+        cwd: jobDir,
       }
     );
 
-    // ========================================================
-    // FIND DOWNLOADED FILE
-    // ========================================================
-
     const downloadedFile =
-      findDownloadedFile(
-        jobDir
-      );
+      findDownloadedFile(jobDir);
 
     if (!downloadedFile) {
       throw new Error(
@@ -1137,16 +1047,7 @@ if (
       );
     }
 
-    console.log(
-      `[DOWNLOAD] Created: ${downloadedFile}`
-    );
-
-    // ========================================================
-    // ENSURE MP4
-    // ========================================================
-
-    let finalFile =
-      downloadedFile;
+    let finalFile = downloadedFile;
 
     if (
       !downloadedFile
@@ -1165,24 +1066,14 @@ if (
       );
     }
 
-    // ========================================================
-    // CHECK FILE
-    // ========================================================
-
-    if (
-      !fs.existsSync(
-        finalFile
-      )
-    ) {
+    if (!fs.existsSync(finalFile)) {
       throw new Error(
         "Final MP4 file was not created."
       );
     }
 
     const stat =
-      fs.statSync(
-        finalFile
-      );
+      fs.statSync(finalFile);
 
     if (stat.size <= 0) {
       throw new Error(
@@ -1190,14 +1081,8 @@ if (
       );
     }
 
-    // ========================================================
-    // VERIFY VIDEO
-    // ========================================================
-
     const hasFinalVideo =
-      await verifyVideoStream(
-        finalFile
-      );
+      await verifyVideoStream(finalFile);
 
     if (!hasFinalVideo) {
       throw new Error(
@@ -1205,14 +1090,8 @@ if (
       );
     }
 
-    // ========================================================
-    // VERIFY AUDIO
-    // ========================================================
-
     const hasFinalAudio =
-      await verifyAudioStream(
-        finalFile
-      );
+      await verifyAudioStream(finalFile);
 
     if (!hasFinalAudio) {
       throw new Error(
@@ -1220,44 +1099,13 @@ if (
       );
     }
 
-    console.log(
-      "[DOWNLOAD] Video stream: OK"
-    );
-
-    console.log(
-      "[DOWNLOAD] Audio stream: OK"
-    );
-
-    console.log(
-      `[DOWNLOAD] Final size: ${stat.size} bytes`
-    );
-
-    console.log(
-      `[DOWNLOAD] Final file: ${finalFile}`
-    );
-
-    console.log(
-      "============================================================"
-    );
-
     return {
       jobToken,
-
       jobDir,
-
-      filePath:
-        finalFile,
-
-      fileSize:
-        stat.size,
+      filePath: finalFile,
+      fileSize: stat.size,
     };
   } catch (error) {
-    console.error(
-      "[DOWNLOAD FAILED]",
-      error?.message ||
-        error
-    );
-
     try {
       fs.rmSync(
         jobDir,
@@ -1362,23 +1210,11 @@ async function normalizeToMp4(
     "-i",
     inputFile,
 
-    // --------------------------------------------------------
-    // VIDEO
-    // --------------------------------------------------------
-
     "-map",
     "0:v:0",
 
-    // --------------------------------------------------------
-    // AUDIO
-    // --------------------------------------------------------
-
     "-map",
     "0:a:0?",
-
-    // --------------------------------------------------------
-    // VIDEO CODEC
-    // --------------------------------------------------------
 
     "-c:v",
     "libx264",
@@ -1392,19 +1228,11 @@ async function normalizeToMp4(
     "-pix_fmt",
     "yuv420p",
 
-    // --------------------------------------------------------
-    // AUDIO CODEC
-    // --------------------------------------------------------
-
     "-c:a",
     "aac",
 
     "-b:a",
     "128k",
-
-    // --------------------------------------------------------
-    // MP4 OPTIMIZATION
-    // --------------------------------------------------------
 
     "-movflags",
     "+faststart",
@@ -1497,10 +1325,6 @@ function cleanupExpiredMedia() {
               force: true,
             }
           );
-
-          console.log(
-            `[CLEANUP] Removed: ${directory}`
-          );
         }
       } catch {}
     }
@@ -1530,7 +1354,7 @@ setInterval(
 );
 
 // ============================================================
-// ROOT
+// ROOT & HEALTH
 // ============================================================
 
 app.get(
@@ -1538,83 +1362,21 @@ app.get(
   (req, res) => {
     res.json({
       success: true,
-
-      service:
-        "StreamBox Backend",
-
-      status:
-        "online",
-
-      version:
-        "12.0.1",
-
-      architecture:
-        "yt-dlp + FFmpeg + ffprobe + video quality + automatic audio",
-
-      youtube:
-        "disabled",
-
-      genericLinks:
-        "yt-dlp supported public URLs",
-
-      qualitySelection:
-        "enabled",
-
-      audioMerge:
-        "enabled",
-
-      mp4Output:
-        "enabled",
-
-      timestamp:
-        new Date().toISOString(),
+      service: "StreamBox Backend",
+      status: "online",
+      version: "12.0.3",
+      timestamp: new Date().toISOString(),
     });
   }
 );
-
-// ============================================================
-// HEALTH
-// ============================================================
 
 app.get(
   "/api/health",
   (req, res) => {
     res.json({
       success: true,
-
-      status:
-        "online",
-
-      service:
-        "StreamBox Backend",
-
-      version:
-        "12.0.1",
-
-      audio:
-        "enabled",
-
-      video:
-        "enabled",
-
-      timestamp:
-        new Date().toISOString(),
-    });
-  }
-);
-
-// ============================================================
-// EXTRACT GET
-// ============================================================
-
-app.get(
-  "/api/extract",
-  (req, res) => {
-    res.json({
-      success: true,
-
-      message:
-        "Use POST /api/extract with { url }",
+      status: "online",
+      timestamp: new Date().toISOString(),
     });
   }
 );
@@ -1638,9 +1400,7 @@ app.post(
       if (!inputUrl) {
         return res.status(400).json({
           success: false,
-
-          error:
-            "Please provide a video URL.",
+          error: "Please provide a video URL.",
         });
       }
 
@@ -1651,9 +1411,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-
-          error:
-            "Invalid URL.",
+          error: "Invalid URL.",
         });
       }
 
@@ -1664,9 +1422,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-
-          error:
-            "YouTube downloads are not supported by StreamBox.",
+          error: "YouTube downloads are not supported by StreamBox.",
         });
       }
 
@@ -1688,9 +1444,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-
-          error:
-            "YouTube downloads are not supported by StreamBox.",
+          error: "YouTube downloads are not supported by StreamBox.",
         });
       }
 
@@ -1732,17 +1486,11 @@ app.post(
           ) {
             return res.status(400).json({
               success: false,
-
-              error:
-                "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
+              error: "Instagram profile URLs are not supported. Please enter an Instagram video or reel URL.",
             });
           }
         } catch {}
       }
-
-      console.log(
-        `[EXTRACT] ${preparedUrl}`
-      );
 
       const metadata =
         await extractMetadata(
@@ -1772,14 +1520,10 @@ app.post(
         createExtractionSession({
           sourceUrl:
             preparedUrl,
-
           originalUrl:
             inputUrl,
-
           platform,
-
           metadata,
-
           qualities:
             limitedQualities,
         });
@@ -1787,69 +1531,40 @@ app.post(
       const best =
         limitedQualities[0];
 
-      const processingTimeMs =
-        Date.now() -
-        started;
-
       return res.json({
         success: true,
-
         token,
-
         platform,
-
         sourceUrl:
           inputUrl,
-
         preparedUrl,
-
         title:
           metadata.title ||
           "StreamBox Video",
-
         thumbnail:
           metadata.thumbnail ||
           null,
-
         duration:
           metadata.duration ||
           null,
-
-        width:
-          metadata.width ||
-          null,
-
-        height:
-          metadata.height ||
-          null,
-
         previewUrl:
           best?.previewUrl ||
           null,
-
         qualities:
           limitedQualities,
-
         formats:
           limitedQualities,
-
-        processingTimeMs,
+        processingTimeMs:
+          Date.now() -
+          started,
       });
     } catch (error) {
-      console.error(
-        "[EXTRACT ERROR]",
-        error?.message ||
-          error
-      );
-
       return res.status(500).json({
         success: false,
-
         error:
           friendlyYtDlpError(
             error
           ),
-
         processingTimeMs:
           Date.now() -
           started,
@@ -1859,7 +1574,7 @@ app.post(
 );
 
 // ============================================================
-// DOWNLOAD SELECTED QUALITY
+// DOWNLOAD
 // ============================================================
 
 app.post(
@@ -1876,21 +1591,10 @@ app.post(
           ?.toString()
           .trim();
 
-      if (!token) {
+      if (!token || !formatId) {
         return res.status(400).json({
           success: false,
-
-          error:
-            "Download session is missing.",
-        });
-      }
-
-      if (!formatId) {
-        return res.status(400).json({
-          success: false,
-
-          error:
-            "Video quality is missing.",
+          error: "Download session or quality ID is missing.",
         });
       }
 
@@ -1902,33 +1606,9 @@ app.post(
       if (!session) {
         return res.status(404).json({
           success: false,
-
-          error:
-            "Download session expired. Please extract the URL again.",
+          error: "Download session expired. Please extract the URL again.",
         });
       }
-
-      const allowed =
-        session.qualities.some(
-          (quality) =>
-            String(
-              quality.id
-            ) ===
-            String(formatId)
-        );
-
-      if (!allowed) {
-        return res.status(400).json({
-          success: false,
-
-          error:
-            "Selected video quality is no longer available.",
-        });
-      }
-
-      console.log(
-        `[DOWNLOAD REQUEST] ${session.platform} ${formatId}`
-      );
 
       const job =
         await downloadSelectedFormat(
@@ -1963,12 +1643,7 @@ app.post(
 
       stream.on(
         "error",
-        (error) => {
-          console.error(
-            "[STREAM ERROR]",
-            error
-          );
-
+        () => {
           if (
             !res.headersSent
           ) {
@@ -1988,7 +1663,6 @@ app.post(
                   {
                     recursive:
                       true,
-
                     force:
                       true,
                   }
@@ -2002,18 +1676,11 @@ app.post(
 
       stream.pipe(res);
     } catch (error) {
-      console.error(
-        "[DOWNLOAD ERROR]",
-        error?.message ||
-          error
-      );
-
       if (
         !res.headersSent
       ) {
         return res.status(500).json({
           success: false,
-
           error:
             friendlyYtDlpError(
               error
@@ -2025,378 +1692,26 @@ app.post(
 );
 
 // ============================================================
-// FRIENDLY ERRORS
+// ERROR HANDLER & START
 // ============================================================
 
-function friendlyYtDlpError(
-  error
-) {
-  const message =
-    String(
-      error?.message ||
-        error ||
-        ""
-    );
+function friendlyYtDlpError(error) {
+  const message = String(error?.message || error || "");
+  const lower = message.toLowerCase();
 
-  const lower =
-    message.toLowerCase();
-
-  if (
-    lower.includes("private") ||
-    lower.includes("login") ||
-    lower.includes("sign in")
-  ) {
+  if (lower.includes("private") || lower.includes("login")) {
     return "This video appears to require login or is private.";
   }
-
-  if (
-    lower.includes(
-      "unsupported url"
-    )
-  ) {
-    return "This website or URL is not supported.";
-  }
-
-  if (
-    lower.includes(
-      "age-restricted"
-    )
-  ) {
-    return "This video is age restricted and cannot be downloaded.";
-  }
-
-  if (
-    lower.includes(
-      "not available"
-    )
-  ) {
-    return "This video is not available.";
-  }
-
-  if (
-    lower.includes(
-      "copyright"
-    )
-  ) {
+  if (lower.includes("copyright")) {
     return "This media cannot be accessed because of a copyright restriction.";
   }
-
-  if (
-    lower.includes(
-      "audio stream"
-    ) ||
-    lower.includes(
-      "does not contain an audio"
-    )
-  ) {
-    return "Audio could not be obtained for this video.";
-  }
-
-  if (
-    lower.includes(
-      "timed out"
-    ) ||
-    lower.includes(
-      "timeout"
-    )
-  ) {
-    return "The server took too long to process this video. Please try again.";
-  }
-
-  if (
-    lower.includes(
-      "requested format"
-    ) &&
-    lower.includes(
-      "not available"
-    )
-  ) {
-    return "The selected video quality is not available for this video.";
-  }
-
-  return message.length > 500
-    ? "Unable to process this video. Please try another public video URL."
-    : message ||
-        "Unable to process this video.";
+  return message.length > 500 ? "Unable to process this video." : message || "Unable to process this video.";
 }
-
-// ============================================================
-// TOOLS
-// ============================================================
-
-app.get(
-  "/api/tools",
-  async (req, res) => {
-    const result = {
-      success: true,
-
-      ytDlp: {
-        path:
-          getYtDlpPath(),
-
-        installed:
-          fs.existsSync(
-            getYtDlpPath()
-          ),
-      },
-
-      ffmpeg: {
-        path:
-          FFMPEG_PATH,
-
-        installed:
-          fs.existsSync(
-            FFMPEG_PATH
-          ),
-      },
-
-      ffprobe: {
-        path:
-          FFPROBE_PATH,
-
-        installed:
-          fs.existsSync(
-            FFPROBE_PATH
-          ),
-      },
-
-      deno: {
-        path:
-          DENO_PATH,
-
-        installed:
-          fs.existsSync(
-            DENO_PATH
-          ),
-      },
-
-      audioMerge:
-        true,
-
-      mp4Output:
-        true,
-
-      timestamp:
-        new Date().toISOString(),
-    };
-
-    try {
-      const version =
-        await runCommand(
-          getYtDlpPath(),
-          ["--version"],
-          {
-            timeout:
-              15000,
-          }
-        );
-
-      result.ytDlp.version =
-        version.stdout.trim();
-    } catch (error) {
-      result.ytDlp.version =
-        null;
-    }
-
-    try {
-      const ffmpeg =
-        await runCommand(
-          FFMPEG_PATH,
-          ["-version"],
-          {
-            timeout:
-              15000,
-          }
-        );
-
-      result.ffmpeg.version =
-        ffmpeg.stdout
-          .split(/\r?\n/)[0];
-    } catch (error) {
-      result.ffmpeg.version =
-        null;
-    }
-
-    try {
-      const ffprobe =
-        await runCommand(
-          FFPROBE_PATH,
-          ["-version"],
-          {
-            timeout:
-              15000,
-          }
-        );
-
-      result.ffprobe.version =
-        ffprobe.stdout
-          .split(/\r?\n/)[0];
-    } catch (error) {
-      result.ffprobe.version =
-        null;
-    }
-
-    try {
-      const deno =
-        await runCommand(
-          DENO_PATH,
-          ["--version"],
-          {
-            timeout:
-              15000,
-          }
-        );
-
-      result.deno.version =
-        deno.stdout
-          .split(/\r?\n/)[0];
-    } catch (error) {
-      result.deno.version =
-        null;
-    }
-
-    res.json(result);
-  }
-);
-
-// ============================================================
-// 404
-// ============================================================
-
-app.use(
-  (req, res) => {
-    res.status(404).json({
-      success: false,
-
-      error:
-        "Endpoint not found",
-
-      path:
-        req.path,
-
-      method:
-        req.method,
-    });
-  }
-);
-
-// ============================================================
-// GLOBAL ERROR
-// ============================================================
-
-app.use(
-  (
-    err,
-    req,
-    res,
-    next
-  ) => {
-    console.error(
-      "[GLOBAL ERROR]",
-      err
-    );
-
-    if (
-      res.headersSent
-    ) {
-      return next(err);
-    }
-
-    res.status(500).json({
-      success: false,
-
-      error:
-        "Internal server error",
-    });
-  }
-);
-
-// ============================================================
-// START
-// ============================================================
 
 app.listen(
   PORT,
   "0.0.0.0",
   () => {
-    console.log("");
-
-    console.log(
-      "============================================================"
-    );
-
-    console.log(
-      "              STREAMBOX BACKEND v12.0.1"
-    );
-
-    console.log(
-      "============================================================"
-    );
-
-    console.log(
-      `Port: ${PORT}`
-    );
-
-    console.log(
-      `Node: ${process.version}`
-    );
-
-    console.log(
-      `yt-dlp: ${getYtDlpPath()}`
-    );
-
-    console.log(
-      `FFmpeg: ${FFMPEG_PATH}`
-    );
-
-    console.log(
-      `ffprobe: ${FFPROBE_PATH}`
-    );
-
-    console.log(
-      `Deno: ${DENO_PATH}`
-    );
-
-    console.log("");
-
-    console.log(
-      "YouTube: DISABLED"
-    );
-
-    console.log(
-      "Generic yt-dlp public URLs: ENABLED"
-    );
-
-    console.log(
-      "Quality selection: ENABLED"
-    );
-
-    console.log(
-      "Video + Audio: ENABLED"
-    );
-
-    console.log(
-      "Automatic audio merge: ENABLED"
-    );
-
-    console.log(
-      "MP4 output: ENABLED"
-    );
-
-    console.log(
-      "Audio verification: ENABLED"
-    );
-
-    console.log(
-      "Video verification: ENABLED"
-    );
-
-    console.log(
-      "Preview metadata: ENABLED"
-    );
-
-    console.log(
-      "============================================================"
-    );
+    console.log(`STREAMBOX BACKEND v12.0.3 running on port ${PORT}`);
   }
 );
