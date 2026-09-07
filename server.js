@@ -1011,17 +1011,18 @@ async function downloadSelectedFormat(
   // FORMAT SELECTION
   // ==========================================================
 
-  let formatSelector;
+ let formatSelector;
 
-  if (
-    selectedQuality.hasAudio
-  ) {
-    formatSelector =
-      `${formatId}/best`;
-  } else {
-    formatSelector =
-      `${formatId}+bestaudio[acodec!=none]/bestvideo+bestaudio/best`;
-  }
+if (
+  selectedQuality.hasAudio
+) {
+  formatSelector =
+    `${formatId}/best`;
+} else {
+  // Relax the codec constraint to grab any available audio stream or fallback to best combo
+  formatSelector =
+    `${formatId}+bestaudio/bestvideo+bestaudio/best`;
+}
 
   console.log(
     "============================================================"
