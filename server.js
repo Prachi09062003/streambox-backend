@@ -969,7 +969,7 @@ async function verifyVideoStream(
 }
 
 // ============================================================
-// SERVER DOWNLOAD (ROBUST DUAL-STREAM AUDIO MUX FIX)
+// SERVER DOWNLOAD (COMPREHENSIVE MULTI-AUDIO MUX FIX)
 // ============================================================
 
 async function downloadSelectedFormat(
@@ -986,7 +986,7 @@ async function downloadSelectedFormat(
 
   let formatSelector;
   if (session.platform === "instagram") {
-    formatSelector = "bestvideo+bestaudio/best";
+    formatSelector = "bestvideo+bestaudio/best/bv+ba";
   } else {
     const selectedQuality = session.qualities.find(
       (quality) => String(quality.id) === String(formatId)
@@ -1011,6 +1011,7 @@ async function downloadSelectedFormat(
     outputTemplate,
     "--no-part",
     "--no-continue",
+    "--audio-multistreams",
     "--referer",
     session.sourceUrl,
     session.sourceUrl,
@@ -1031,7 +1032,6 @@ async function downloadSelectedFormat(
         const targetMp4 = path.join(jobDir, "streambox.mp4");
 
         if (mediaData.audioUrl) {
-          // Mux separate video and audio sources directly using FFmpeg
           fallbackArgs = [
             "-y",
             "-i",
@@ -1046,6 +1046,7 @@ async function downloadSelectedFormat(
             "0:v:0",
             "-map",
             "1:a:0?",
+            "-shortest",
             targetMp4,
           ];
         } else {
@@ -1078,41 +1079,38 @@ async function downloadSelectedFormat(
 
   let finalFile = downloadedFile;
 
-  if (!downloadedFile.toLowerCase().endsWith(".mp4")) {
-    finalFile = path.join(jobDir, "streambox.mp4");
-    await normalizeToMp4(downloadedFile, finalFile);
-  }
+  // Comprehensive normalization ensuring all audio tracks are mapped into the final container
+  const normalizedFile = path.join(jobDir, "streambox_normalized.mp4");
+  const normalizeArgs = [
+    "-y",
+    "-i",
+    downloadedFile,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a?",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "23",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-movflags",
+    "+faststart",
+    normalizedFile,
+  ];
 
-  // Check audio and ensure dual-stream injection if missing on Instagram reels
-  const hasAudio = await verifyAudioStream(finalFile);
-  if (!hasAudio && session.platform === "instagram") {
-    console.log("[AUDIO FIX] Secondary injection pass for Instagram audio track...");
-    const mediaData = await fetchInstagramDirectMedia(session.sourceUrl);
-    if (mediaData.audioUrl) {
-      const fixedFile = path.join(jobDir, "streambox_fixed.mp4");
-      const fixArgs = [
-        "-y",
-        "-i",
-        finalFile,
-        "-i",
-        mediaData.audioUrl,
-        "-c:v",
-        "copy",
-        "-c:a",
-        "aac",
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0?",
-        fixedFile,
-      ];
-      try {
-        await runCommand(FFMPEG_PATH, fixArgs, { timeout: DOWNLOAD_TIMEOUT });
-        if (fs.existsSync(fixedFile) && fs.statSync(fixedFile).size > 0) {
-          finalFile = fixedFile;
-        }
-      } catch {}
+  try {
+    await runCommand(FFMPEG_PATH, normalizeArgs, { timeout: DOWNLOAD_TIMEOUT });
+    if (fs.existsSync(normalizedFile) && fs.statSync(normalizedFile).size > 0) {
+      finalFile = normalizedFile;
     }
+  } catch (normErr) {
+    console.error("[NORMALIZATION WARNING]", normErr?.message || normErr);
   }
 
   const stat = fs.statSync(finalFile);
