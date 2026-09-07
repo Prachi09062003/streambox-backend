@@ -984,7 +984,8 @@ async function downloadSelectedFormat(
 
   let formatSelector;
   if (session.platform === "instagram") {
-    formatSelector = "best";
+    // Force yt-dlp to explicitly look for separate video and audio tracks and combine them
+    formatSelector = "bestvideo+bestaudio/best";
   } else {
     const selectedQuality = session.qualities.find(
       (quality) => String(quality.id) === String(formatId)
@@ -996,7 +997,6 @@ async function downloadSelectedFormat(
     
     formatSelector = selectedQuality.hasAudio ? `${formatId}/best` : `${formatId}+bestaudio/best`;
   }
-
   const args = [
     ...getCommonYtDlpArgs(),
     "-f",
