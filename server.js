@@ -933,7 +933,7 @@ async function verifyVideoStream(
 }
 
 // ============================================================
-// SERVER DOWNLOAD (ROBUST INSTAGRAM & GENERAL FIX)
+// SERVER DOWNLOAD (FINAL INSTAGRAM PROGRESSED FIX)
 // ============================================================
 
 async function downloadSelectedFormat(
@@ -977,11 +977,11 @@ async function downloadSelectedFormat(
     );
   }
 
-  // Force single-file progressive download for Instagram to avoid audio-stripping bugs
+  // Instagram fix: Use generic 'best' format to download a complete multiplexed video file directly
   let formatSelector;
   
   if (session.platform === "instagram") {
-    formatSelector = "best/bv*+ba/b";
+    formatSelector = "best";
   } else if (selectedQuality.hasAudio) {
     formatSelector = `${formatId}/best`;
   } else {
@@ -1358,7 +1358,7 @@ app.get(
       success: true,
       service: "StreamBox Backend",
       status: "online",
-      version: "12.0.3",
+      version: "12.0.4",
       timestamp: new Date().toISOString(),
     });
   }
@@ -1706,6 +1706,6 @@ app.listen(
   PORT,
   "0.0.0.0",
   () => {
-    console.log(`STREAMBOX BACKEND v12.0.3 running on port ${PORT}`);
+    console.log(`STREAMBOX BACKEND v12.0.4 running on port ${PORT}`);
   }
 );
