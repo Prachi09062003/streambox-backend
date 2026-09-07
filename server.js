@@ -969,7 +969,7 @@ async function verifyVideoStream(
 }
 
 // ============================================================
-// SERVER DOWNLOAD (COMPREHENSIVE MULTI-AUDIO MUX FIX)
+// SERVER DOWNLOAD (STABLE & TIMEOUT-SAFE)
 // ============================================================
 
 async function downloadSelectedFormat(
@@ -986,7 +986,8 @@ async function downloadSelectedFormat(
 
   let formatSelector;
   if (session.platform === "instagram") {
-    formatSelector = "bestvideo+bestaudio/best/bv+ba";
+    // Standard robust selector to prevent heavy processing stalls
+    formatSelector = "best/bestvideo+bestaudio";
   } else {
     const selectedQuality = session.qualities.find(
       (quality) => String(quality.id) === String(formatId)
@@ -1011,65 +1012,16 @@ async function downloadSelectedFormat(
     outputTemplate,
     "--no-part",
     "--no-continue",
-    "--audio-multistreams",
     "--referer",
     session.sourceUrl,
     session.sourceUrl,
   ];
 
-  try {
-    await runCommand(ytDlp, args, {
-      timeout: DOWNLOAD_TIMEOUT,
-      cwd: jobDir,
-    });
-  } catch (ytError) {
-    if (session.platform === "instagram") {
-      console.log("[DOWNLOAD FALLBACK] yt-dlp failed, attempting direct OpenGraph scrape...");
-      const mediaData = await fetchInstagramDirectMedia(session.sourceUrl);
-      
-      if (mediaData.videoUrl) {
-        let fallbackArgs;
-        const targetMp4 = path.join(jobDir, "streambox.mp4");
-
-        if (mediaData.audioUrl) {
-          fallbackArgs = [
-            "-y",
-            "-i",
-            mediaData.videoUrl,
-            "-i",
-            mediaData.audioUrl,
-            "-c:v",
-            "copy",
-            "-c:a",
-            "aac",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0?",
-            "-shortest",
-            targetMp4,
-          ];
-        } else {
-          fallbackArgs = [
-            "-y",
-            "-i",
-            mediaData.videoUrl,
-            "-c",
-            "copy",
-            targetMp4,
-          ];
-        }
-
-        await runCommand(FFMPEG_PATH, fallbackArgs, {
-          timeout: DOWNLOAD_TIMEOUT,
-        });
-      } else {
-        throw ytError;
-      }
-    } else {
-      throw ytError;
-    }
-  }
+  // Execute yt-dlp with a clear timeout boundary to prevent 502 gateway crashes
+  await runCommand(ytDlp, args, {
+    timeout: 120000, // 2 minutes max
+    cwd: jobDir,
+  });
 
   const downloadedFile = findDownloadedFile(jobDir);
 
@@ -1079,38 +1031,9 @@ async function downloadSelectedFormat(
 
   let finalFile = downloadedFile;
 
-  // Comprehensive normalization ensuring all audio tracks are mapped into the final container
-  const normalizedFile = path.join(jobDir, "streambox_normalized.mp4");
-  const normalizeArgs = [
-    "-y",
-    "-i",
-    downloadedFile,
-    "-map",
-    "0:v:0",
-    "-map",
-    "0:a?",
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "23",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "128k",
-    "-movflags",
-    "+faststart",
-    normalizedFile,
-  ];
-
-  try {
-    await runCommand(FFMPEG_PATH, normalizeArgs, { timeout: DOWNLOAD_TIMEOUT });
-    if (fs.existsSync(normalizedFile) && fs.statSync(normalizedFile).size > 0) {
-      finalFile = normalizedFile;
-    }
-  } catch (normErr) {
-    console.error("[NORMALIZATION WARNING]", normErr?.message || normErr);
+  if (!downloadedFile.toLowerCase().endsWith(".mp4")) {
+    finalFile = path.join(jobDir, "streambox.mp4");
+    await normalizeToMp4(downloadedFile, finalFile);
   }
 
   const stat = fs.statSync(finalFile);
