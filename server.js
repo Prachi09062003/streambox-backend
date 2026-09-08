@@ -87,7 +87,7 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-// EXTRACT ENDPOINT (Updated for Pinterest & Instagram Audio)
+// FINAL EXTRACT ENDPOINT (Multi-Quality & Audio-Guaranteed)
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
@@ -98,26 +98,7 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // Try Instagram OpenGraph Scraper First
-    if (platform === "instagram") {
-      const directVideoUrl = await fetchInstagramDirectMedia(inputUrl);
-      if (directVideoUrl) {
-        return res.json({
-          success: true,
-          platform: "instagram",
-          title: "Instagram Reel",
-          thumbnail: null,
-          qualities: [{
-            id: directVideoUrl,
-            label: "HD Quality (With Audio)",
-            previewUrl: directVideoUrl,
-            hasAudio: true,
-          }],
-        });
-      }
-    }
-
-    // Flexible yt-dlp arguments (Removes strict forced mp4 format breaking Pinterest)
+    // Run yt-dlp to extract full format matrices and metadata JSON
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -131,15 +112,48 @@ app.post("/api/extract", async (req, res) => {
     const stdout = await runCommand(YTDLP_PATH, args);
     const metadata = JSON.parse(stdout.trim());
     
-    // Fallback safely across formats or requested formats
-    let directCdnUrl = metadata.url;
-    if (!directCdnUrl && metadata.formats && metadata.formats.length > 0) {
-      const bestFormat = metadata.formats.reverse().find(f => f.url && f.vcodec !== 'none');
-      directCdnUrl = bestFormat ? bestFormat.url : metadata.formats[metadata.formats.length - 1].url;
+    let qualities = [];
+
+    // Map all available formats if present
+    if (metadata.formats && Array.isArray(metadata.formats)) {
+      // Filter for formats that contain a valid download link
+      const validFormats = metadata.formats.filter(f => f.url);
+      
+      // Look for pre-combined formats or best video streams with audio tracks
+      for (const fmt of validFormats) {
+        const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
+        const hasAudio = fmt.acodec && fmt.acodec !== 'none';
+
+        if (hasVideo) {
+          qualities.push({
+            id: fmt.url,
+            label: fmt.height ? `${fmt.height}p` : (fmt.format_note || 'Standard Quality'),
+            height: fmt.height || null,
+            width: fmt.width || null,
+            hasAudio: hasAudio,
+            previewUrl: fmt.url,
+          });
+        }
+      }
     }
 
-    if (!directCdnUrl) {
-      throw new Error("Could not extract direct stream URL for this media.");
+    // Fallback if no detailed format array was isolated
+    if (qualities.length === 0 && metadata.url) {
+      qualities.push({
+        id: metadata.url,
+        label: "Best Available Quality",
+        height: metadata.height || null,
+        width: metadata.width || null,
+        hasAudio: true,
+        previewUrl: metadata.url,
+      });
+    }
+
+    // Remove duplicates based on resolution label or ID
+    const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
+
+    if (uniqueQualities.length === 0) {
+      throw new Error("Could not extract playable stream URLs for this link.");
     }
 
     return res.json({
@@ -147,12 +161,7 @@ app.post("/api/extract", async (req, res) => {
       platform,
       title: metadata.title || "StreamBox Video",
       thumbnail: metadata.thumbnail || null,
-      qualities: [{
-        id: directCdnUrl,
-        label: "Best Available Quality",
-        previewUrl: directCdnUrl,
-        hasAudio: true,
-      }],
+      qualities: uniqueQualities,
     });
   } catch (error) {
     return res.status(500).json({
