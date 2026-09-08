@@ -1,6 +1,10 @@
 const express = require("express");
 const cors = require("cors");
 const { spawn } = require("child_process");
+const http = require("http");
+const https = require("https");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,6 +15,7 @@ const USER_AGENT =
   "Chrome/131.0.0.0 Safari/537.36";
 
 const YTDLP_PATH = process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
+const COOKIES_PATH = path.join(__dirname, "instagram_cookies.txt");
 
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -32,20 +37,45 @@ function cleanInputUrl(value) {
 function getPlatform(url) {
   const value = url.toLowerCase();
   if (value.includes("instagram.com") || value.includes("instagr.am")) return "instagram";
+  if (value.includes("pinterest.com") || value.includes("pin.it")) return "pinterest";
   if (value.includes("tiktok.com") || value.includes("://tiktok.com")) return "tiktok";
   if (value.includes("facebook.com") || value.includes("fb.watch")) return "facebook";
-  if (value.includes("pinterest.com") || value.includes("pin.it")) return "pinterest";
   if (value.includes("twitter.com") || value.includes("x.com")) return "twitter";
   return "generic";
 }
 
 // ============================================================
-// STABLE EXTERNAL FETCHER FOR INSTAGRAM & PINTEREST
+// REDIRECT RESOLVER ENGINE (Fixes pin.it Shortened Links)
+// ============================================================
+function expandShortenedUrl(targetUrl) {
+  return new Promise((resolve) => {
+    try {
+      const urlObj = new URL(targetUrl);
+      const client = urlObj.protocol === "https:" ? https : http;
+
+      client.request(targetUrl, { 
+        method: "HEAD", 
+        headers: { "User-Agent": USER_AGENT } 
+      }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const resolvedUrl = new URL(res.headers.location, targetUrl).href;
+          resolve(resolvedUrl);
+        } else {
+          resolve(targetUrl);
+        }
+      }).on("error", () => resolve(targetUrl)).end();
+    } catch (_) {
+      resolve(targetUrl);
+    }
+  });
+}
+
+// ============================================================
+// STATIC API PROXY GATEWAY (Optional Fallback Wrapper)
 // ============================================================
 async function fetchViaPublicApi(targetUrl) {
   try {
-    // Using a reliable public media downloader endpoint proxy
-    const apiRes = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(targetUrl)}`, {
+    const apiRes = await fetch(`https://tikwm.com{encodeURIComponent(targetUrl)}`, {
       headers: { "User-Agent": USER_AGENT },
     });
     const json = await apiRes.json();
@@ -79,37 +109,56 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-// EXTRACT ENDPOINT (With Fixed Multi-Stream Audio/Video Muxing)
+// LIVE STREAM CONVERSION PROXY (M3U8 -> MP4 Transcoder Engine)
+// ============================================================
+app.get("/api/download-proxy", (req, res) => {
+  const streamUrl = req.query.url;
+  if (!streamUrl || !isValidHttpUrl(streamUrl)) {
+    return res.status(400).json({ success: false, error: "Missing or invalid streaming target link." });
+  }
+
+  res.setHeader("Content-Disposition", `attachment; filename="StreamBox_Muxed_${Date.now()}.mp4"`);
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  const ffmpegProcess = spawn("ffmpeg", [
+    "-i", streamUrl,
+    "-c:v", "copy",
+    "-c:a", "aac",
+    "-bsf:a", "aac_adtstoasc",
+    "-movflags", "frag_keyframe+empty_moov",
+    "-f", "mp4",
+    "pipe:1"
+  ], { windowsHide: true });
+
+  ffmpegProcess.stdout.pipe(res);
+
+  ffmpegProcess.on("close", (code) => {
+    res.end();
+  });
+
+  req.on("close", () => {
+    try { ffmpegProcess.kill("SIGKILL"); } catch (_) {}
+  });
+});
+
+// ============================================================
+// CORE EXTRACTION APIS WITH FIXED MULTI-STREAM PIPELINES
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
-    const inputUrl = cleanInputUrl(req.body?.url);
+    let inputUrl = cleanInputUrl(req.body?.url);
     if (!inputUrl || !isValidHttpUrl(inputUrl)) {
       return res.status(400).json({ success: false, error: "Please provide a valid video URL." });
     }
 
-    const platform = getPlatform(inputUrl);
-
-    // 1. Fallback Proxy Route Check
-    if (platform === "instagram" || platform === "pinterest" || platform === "tiktok") {
-      const mediaData = await fetchViaPublicApi(inputUrl);
-      if (mediaData && mediaData.url) {
-        return res.json({
-          success: true,
-          platform,
-          title: mediaData.title,
-          thumbnail: mediaData.thumbnail,
-          qualities: [{
-            id: mediaData.url,
-            label: "HD Quality (With Audio)",
-            hasAudio: true,
-            previewUrl: mediaData.url,
-          }],
-        });
-      }
+    // Fix Pinterest Step 1: Force resolution of shortened pin.it URLs
+    if (inputUrl.includes("pin.it")) {
+      inputUrl = await expandShortenedUrl(inputUrl);
     }
 
-    // 2. Main Local Engine Fallback (Now handles multi-stream extraction)
+    const platform = getPlatform(inputUrl);
+
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -117,27 +166,58 @@ app.post("/api/extract", async (req, res) => {
       "--dump-single-json",
       "--skip-download",
       "--geo-bypass",
-      // Force extraction of formats containing combined audio and video 
-      "--format", "bestvideo+bestaudio/best",
+      // Fix Instagram Audio Step 1: Force yt-dlp to request highest combined format or explicit mux structures
+      "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
 
-    const stdout = await runCommand(YTDLP_PATH, args);
-    const metadata = JSON.parse(stdout.trim());
+    // Fix Instagram Audio Step 2: Inject authenticated session cookie tracking parameter structures if file is present
+    if (platform === "instagram" && fs.existsSync(COOKIES_PATH)) {
+      args.push("--cookies", COOKIES_PATH);
+    }
+
+    let metadata;
+    try {
+      const stdout = await runCommand(YTDLP_PATH, args);
+      metadata = JSON.parse(stdout.trim());
+    } catch (err) {
+      // Direct Fallback Gateway execution if yt-dlp layer meets scraper blocks
+      const fallbackData = await fetchViaPublicApi(inputUrl);
+      if (fallbackData && fallbackData.url) {
+        return res.json({
+          success: true,
+          platform,
+          title: fallbackData.title,
+          thumbnail: fallbackData.thumbnail,
+          qualities: [{
+            id: fallbackData.url,
+            label: "HD Quality (Muxed With Audio)",
+            hasAudio: true,
+            previewUrl: fallbackData.url,
+          }],
+        });
+      }
+      throw err;
+    }
     
     let qualities = [];
 
-    // Prioritize direct output targets
     if (metadata.url) {
-      // Avoid raw m3u8 playlist format delivery for Pinterest downloads
-      const isM3u8 = metadata.url.includes(".m3u8");
+      const isStream = metadata.url.includes(".m3u8") || metadata.url.includes(".mpd");
+      let downloadUrl = metadata.url;
+
+      // Fix Pinterest Step 2: Automatically convert streaming playlists using our proxy endpoint
+      if (isStream) {
+        downloadUrl = `${req.protocol}://${req.get("host")}/api/download-proxy?url=${encodeURIComponent(metadata.url)}`;
+      }
+
       qualities.push({
-        id: metadata.url,
-        label: metadata.height ? `${metadata.height}p` : "Best Available Quality",
+        id: downloadUrl,
+        label: metadata.height ? `${metadata.height}p (HD)` : "Best Available Quality",
         height: metadata.height || null,
         width: metadata.width || null,
-        hasAudio: !isM3u8, 
+        hasAudio: isStream ? true : (metadata.acodec && metadata.acodec !== 'none'),
         previewUrl: metadata.url,
       });
     }
@@ -145,26 +225,30 @@ app.post("/api/extract", async (req, res) => {
     if (metadata.formats && Array.isArray(metadata.formats)) {
       const validFormats = metadata.formats.filter(f => f.url);
       for (const fmt of validFormats) {
-        // Skip unplayable formats completely 
-        if (fmt.url.includes(".m3u8")) continue;
+        const isStream = fmt.url.includes(".m3u8") || fmt.url.includes(".mpd");
+        let downloadUrl = fmt.url;
+
+        if (isStream) {
+          downloadUrl = `${req.protocol}://${req.get("host")}/api/download-proxy?url=${encodeURIComponent(fmt.url)}`;
+        }
 
         const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
         const hasAudio = fmt.acodec && fmt.acodec !== 'none';
 
         if (hasVideo) {
           qualities.push({
-            id: fmt.url,
+            id: downloadUrl,
             label: fmt.height ? `${fmt.height}p` : (fmt.format_note || 'Standard Quality'),
             height: fmt.height || null,
             width: fmt.width || null,
-            hasAudio: hasAudio || fmt.acodec !== undefined,
+            hasAudio: isStream ? true : (hasAudio || fmt.acodec !== undefined),
             previewUrl: fmt.url,
           });
         }
       }
     }
 
-    // Ensure qualities containing full audio track properties bubbles up first
+    // Sort: Bubbles formats containing confirmed audio tracks up to the top
     qualities.sort((a, b) => {
       if (a.hasAudio !== b.hasAudio) return b.hasAudio ? -1 : 1;
       return (b.height || 0) - (a.height || 0);
@@ -190,57 +274,6 @@ app.post("/api/extract", async (req, res) => {
     });
   }
 });
-
-// ============================================================
-// LIVE STREAM CONVERSION PROXY (M3U8 -> MP4 Converter Engine)
-// ============================================================
-app.get("/api/download-proxy", (req, res) => {
-  const streamUrl = req.query.url;
-
-  if (!streamUrl || !isValidHttpUrl(streamUrl)) {
-    return res.status(400).json({ success: false, error: "Missing or invalid streaming target configuration." });
-  }
-
-  // Set explicit download headers so mobile clients handle it as a flat file binary stream
-  res.setHeader("Content-Disposition", `attachment; filename="StreamBox_Converted_${Date.now()}.mp4"`);
-  res.setHeader("Content-Type", "video/mp4");
-  res.setHeader("Transfer-Encoding", "chunked");
-
-  console.log(`[FFmpeg Proxy Engine] Transcoding stream target initialization: ${streamUrl}`);
-
-  // Spawn FFmpeg to stream process the m3u8 playlist fragments on the fly
-  const ffmpegProcess = spawn(YTDLP_PATH.replace("yt-dlp", "ffmpeg"), [
-    "-i", streamUrl,             // Input streaming manifest location link
-    "-c:v", "copy",              // Copy original video directly without re-encoding to save CPU cycles
-    "-c:a", "aac",               // Re-encode audio to basic AAC to guarantee hardware playback capability
-    "-bsf:a", "aac_adtstoasc",   // Fix standard HLS bitstream data container structures
-    "-movflags", "frag_keyframe+empty_moov", // Force streaming output compatibility wrappers
-    "-f", "mp4",                 // Set output type container format to standard MP4
-    "pipe:1"                     // Pipe output directly into standard output stream handles
-  ], { windowsHide: true });
-
-  // Pipe the live transcoding output buffer directly into your Express HTTP server response payload
-  ffmpegProcess.stdout.pipe(res);
-
-  // Error boundary protection
-  ffmpegProcess.stderr.on("data", (data) => {
-    // Only logged for administrative internal debugging tracking windows
-    // console.log(`[FFmpeg Diagnostic Context]: ${data.toString()}`);
-  });
-
-  ffmpegProcess.on("close", (code) => {
-    console.log(`[FFmpeg Proxy Engine] Transcoding pipeline finished execution lifecycle with code: ${code}`);
-    res.end();
-  });
-
-  // Handle client cancellations gracefully to terminate background ghost processing instances
-  req.on("close", () => {
-    try {
-      ffmpegProcess.kill("SIGKILL");
-    } catch (_) {}
-  });
-});
-
 
 app.get("/", (req, res) => res.json({ success: true, service: "StreamBox Extraction Backend", status: "online" }));
 
