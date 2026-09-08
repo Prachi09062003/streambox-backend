@@ -40,43 +40,26 @@ function getPlatform(url) {
 }
 
 // ============================================================
-// 1. DIRECT OPENGRAPH SCRAPER (Instagram & Pinterest)
+// STABLE EXTERNAL FETCHER FOR INSTAGRAM & PINTEREST
 // ============================================================
-async function fetchDirectMediaMeta(targetUrl, platformName) {
+async function fetchViaPublicApi(targetUrl) {
   try {
-    let fetchUrl = targetUrl;
-    // Resolve short links (like pin.it)
-    if (targetUrl.includes("pin.it") || targetUrl.includes("fb.watch")) {
-      const initialRes = await fetch(targetUrl, { 
-        method: "HEAD", 
-        redirect: "follow", 
-        headers: { "User-Agent": USER_AGENT } 
-      });
-      fetchUrl = initialRes.url;
-    }
-
-    const response = await fetch(fetchUrl, {
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": `https://www.${platformName}.com/`,
-      },
+    // Using a reliable public media downloader endpoint proxy
+    const apiRes = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(targetUrl)}`, {
+      headers: { "User-Agent": USER_AGENT },
     });
-    if (!response.ok) return null;
-
-    const html = await response.text();
-    const videoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) || 
-                       html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i) ||
-                       html.match(/"video_url"\s*:\s*"([^"]+)"/i);
-                       
-    if (videoMatch && videoMatch[1]) {
-      return videoMatch[1].replace(/&amp;/g, "&").replace(/u0026/g, "&").replace(/\\/g, "");
+    const json = await apiRes.json();
+    if (json && json.code === 0 && json.data && json.data.play) {
+      return {
+        url: json.data.play,
+        title: json.data.title || "Social Media Video",
+        thumbnail: json.data.cover || null,
+      };
     }
-    return null;
-  } catch (error) {
-    console.error(`[${platformName.toUpperCase()} SCRAPER ERROR]`, error?.message || error);
-    return null;
+  } catch (e) {
+    console.error("[PUBLIC API FALLBACK ERROR]", e.message);
   }
+  return null;
 }
 
 function runCommand(command, args) {
@@ -107,26 +90,26 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // Step A: Try direct Meta Scraper for Instagram and Pinterest to guarantee audio and avoid blocks
-    if (platform === "instagram" || platform === "pinterest") {
-      const directUrl = await fetchDirectMediaMeta(inputUrl, platform);
-      if (directUrl) {
+    // 1. For Instagram and Pinterest, route through the stable wrapper to completely bypass bot-blocks & audio loss
+    if (platform === "instagram" || platform === "pinterest" || platform === "tiktok") {
+      const mediaData = await fetchViaPublicApi(inputUrl);
+      if (mediaData && mediaData.url) {
         return res.json({
           success: true,
           platform,
-          title: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Video`,
-          thumbnail: null,
+          title: mediaData.title,
+          thumbnail: mediaData.thumbnail,
           qualities: [{
-            id: directUrl,
+            id: mediaData.url,
             label: "HD Quality (With Audio)",
             hasAudio: true,
-            previewUrl: directUrl,
+            previewUrl: mediaData.url,
           }],
         });
       }
     }
 
-    // Step B: Fallback to yt-dlp for other platforms (Facebook, Twitter, TikTok)
+    // 2. Fallback to yt-dlp for Facebook, Twitter, etc.
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -175,7 +158,7 @@ app.post("/api/extract", async (req, res) => {
 
     qualities.sort((a, b) => {
       if (a.hasAudio !== b.hasAudio) return b.hasAudio ? 1 : -1;
-      return (b.height || 0) - (a.height || 0);
+      return (b.height || 0) - (b.height || 0);
     });
 
     const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
