@@ -13,13 +13,13 @@ const USER_AGENT =
 const YTDLP_PATH = process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
 
 // ============================================================
-# MIDDLEWARE
+// MIDDLEWARE
 // ============================================================
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 // ============================================================
-# HELPERS & VALIDATORS
+// HELPERS & VALIDATORS
 // ============================================================
 function isValidHttpUrl(value) {
   try {
@@ -46,7 +46,7 @@ function getPlatform(url) {
 }
 
 // ============================================================
-# OPENGRAPH INSTAGRAM SCRAPER (Fixes Audio Issues)
+//OPENGRAPH INSTAGRAM SCRAPER (Fixes Audio Issues)
 // ============================================================
 async function fetchInstagramDirectMedia(targetUrl) {
   try {
@@ -68,7 +68,7 @@ async function fetchInstagramDirectMedia(targetUrl) {
 }
 
 // ============================================================
-# PROCESS RUNNER
+//PROCESS RUNNER
 // ============================================================
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
@@ -87,7 +87,7 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-# EXTRACT ENDPOINT
+//EXTRACT ENDPOINT
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
