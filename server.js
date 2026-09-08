@@ -82,6 +82,8 @@ app.post("/api/extract", async (req, res) => {
       "--no-warnings",
       "--dump-single-json",
       "--skip-download",
+      "--geo-bypass",
+      "--add-header", "Referer:https://www.pinterest.com/",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
