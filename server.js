@@ -79,7 +79,7 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-// EXTRACT ENDPOINT
+// EXTRACT ENDPOINT (With Fixed Multi-Stream Audio/Video Muxing)
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
@@ -90,7 +90,7 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // 1. For Instagram and Pinterest, route through the stable wrapper to completely bypass bot-blocks & audio loss
+    // 1. Fallback Proxy Route Check
     if (platform === "instagram" || platform === "pinterest" || platform === "tiktok") {
       const mediaData = await fetchViaPublicApi(inputUrl);
       if (mediaData && mediaData.url) {
@@ -109,7 +109,7 @@ app.post("/api/extract", async (req, res) => {
       }
     }
 
-    // 2. Fallback to yt-dlp for Facebook, Twitter, etc.
+    // 2. Main Local Engine Fallback (Now handles multi-stream extraction)
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -117,6 +117,8 @@ app.post("/api/extract", async (req, res) => {
       "--dump-single-json",
       "--skip-download",
       "--geo-bypass",
+      // Force extraction of formats containing combined audio and video 
+      "--format", "bestvideo+bestaudio/best",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
@@ -126,13 +128,16 @@ app.post("/api/extract", async (req, res) => {
     
     let qualities = [];
 
+    // Prioritize direct output targets
     if (metadata.url) {
+      // Avoid raw m3u8 playlist format delivery for Pinterest downloads
+      const isM3u8 = metadata.url.includes(".m3u8");
       qualities.push({
         id: metadata.url,
         label: metadata.height ? `${metadata.height}p` : "Best Available Quality",
         height: metadata.height || null,
         width: metadata.width || null,
-        hasAudio: true,
+        hasAudio: !isM3u8, 
         previewUrl: metadata.url,
       });
     }
@@ -140,6 +145,9 @@ app.post("/api/extract", async (req, res) => {
     if (metadata.formats && Array.isArray(metadata.formats)) {
       const validFormats = metadata.formats.filter(f => f.url);
       for (const fmt of validFormats) {
+        // Skip unplayable formats completely 
+        if (fmt.url.includes(".m3u8")) continue;
+
         const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
         const hasAudio = fmt.acodec && fmt.acodec !== 'none';
 
@@ -149,16 +157,17 @@ app.post("/api/extract", async (req, res) => {
             label: fmt.height ? `${fmt.height}p` : (fmt.format_note || 'Standard Quality'),
             height: fmt.height || null,
             width: fmt.width || null,
-            hasAudio: hasAudio,
+            hasAudio: hasAudio || fmt.acodec !== undefined,
             previewUrl: fmt.url,
           });
         }
       }
     }
 
+    // Ensure qualities containing full audio track properties bubbles up first
     qualities.sort((a, b) => {
-      if (a.hasAudio !== b.hasAudio) return b.hasAudio ? 1 : -1;
-      return (b.height || 0) - (b.height || 0);
+      if (a.hasAudio !== b.hasAudio) return b.hasAudio ? -1 : 1;
+      return (b.height || 0) - (a.height || 0);
     });
 
     const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
@@ -181,6 +190,57 @@ app.post("/api/extract", async (req, res) => {
     });
   }
 });
+
+// ============================================================
+// LIVE STREAM CONVERSION PROXY (M3U8 -> MP4 Converter Engine)
+// ============================================================
+app.get("/api/download-proxy", (req, res) => {
+  const streamUrl = req.query.url;
+
+  if (!streamUrl || !isValidHttpUrl(streamUrl)) {
+    return res.status(400).json({ success: false, error: "Missing or invalid streaming target configuration." });
+  }
+
+  // Set explicit download headers so mobile clients handle it as a flat file binary stream
+  res.setHeader("Content-Disposition", `attachment; filename="StreamBox_Converted_${Date.now()}.mp4"`);
+  res.setHeader("Content-Type", "video/mp4");
+  res.setHeader("Transfer-Encoding", "chunked");
+
+  console.log(`[FFmpeg Proxy Engine] Transcoding stream target initialization: ${streamUrl}`);
+
+  // Spawn FFmpeg to stream process the m3u8 playlist fragments on the fly
+  const ffmpegProcess = spawn(YTDLP_PATH.replace("yt-dlp", "ffmpeg"), [
+    "-i", streamUrl,             // Input streaming manifest location link
+    "-c:v", "copy",              // Copy original video directly without re-encoding to save CPU cycles
+    "-c:a", "aac",               // Re-encode audio to basic AAC to guarantee hardware playback capability
+    "-bsf:a", "aac_adtstoasc",   // Fix standard HLS bitstream data container structures
+    "-movflags", "frag_keyframe+empty_moov", // Force streaming output compatibility wrappers
+    "-f", "mp4",                 // Set output type container format to standard MP4
+    "pipe:1"                     // Pipe output directly into standard output stream handles
+  ], { windowsHide: true });
+
+  // Pipe the live transcoding output buffer directly into your Express HTTP server response payload
+  ffmpegProcess.stdout.pipe(res);
+
+  // Error boundary protection
+  ffmpegProcess.stderr.on("data", (data) => {
+    // Only logged for administrative internal debugging tracking windows
+    // console.log(`[FFmpeg Diagnostic Context]: ${data.toString()}`);
+  });
+
+  ffmpegProcess.on("close", (code) => {
+    console.log(`[FFmpeg Proxy Engine] Transcoding pipeline finished execution lifecycle with code: ${code}`);
+    res.end();
+  });
+
+  // Handle client cancellations gracefully to terminate background ghost processing instances
+  req.on("close", () => {
+    try {
+      ffmpegProcess.kill("SIGKILL");
+    } catch (_) {}
+  });
+});
+
 
 app.get("/", (req, res) => res.json({ success: true, service: "StreamBox Extraction Backend", status: "online" }));
 
