@@ -87,7 +87,7 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-//EXTRACT ENDPOINT
+// EXTRACT ENDPOINT (Updated for Pinterest & Instagram Audio)
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
@@ -98,7 +98,7 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // 💡 Fix 1: Try Instagram OpenGraph Scraper First to guarantee fused audio tracks
+    // Try Instagram OpenGraph Scraper First
     if (platform === "instagram") {
       const directVideoUrl = await fetchInstagramDirectMedia(inputUrl);
       if (directVideoUrl) {
@@ -117,14 +117,13 @@ app.post("/api/extract", async (req, res) => {
       }
     }
 
-    // 💡 Fix 2: Force yt-dlp to request pre-merged audio+video streams to bypass server ffmpeg tasks
+    // Flexible yt-dlp arguments (Removes strict forced mp4 format breaking Pinterest)
     const args = [
       "--ignore-config",
       "--no-playlist",
       "--no-warnings",
       "--dump-single-json",
       "--skip-download",
-      "-f", "best[ext=mp4]/best",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
@@ -132,7 +131,12 @@ app.post("/api/extract", async (req, res) => {
     const stdout = await runCommand(YTDLP_PATH, args);
     const metadata = JSON.parse(stdout.trim());
     
-    const directCdnUrl = metadata.url || (metadata.formats && metadata.formats.pop()?.url);
+    // Fallback safely across formats or requested formats
+    let directCdnUrl = metadata.url;
+    if (!directCdnUrl && metadata.formats && metadata.formats.length > 0) {
+      const bestFormat = metadata.formats.reverse().find(f => f.url && f.vcodec !== 'none');
+      directCdnUrl = bestFormat ? bestFormat.url : metadata.formats[metadata.formats.length - 1].url;
+    }
 
     if (!directCdnUrl) {
       throw new Error("Could not extract direct stream URL for this media.");
