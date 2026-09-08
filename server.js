@@ -38,7 +38,7 @@ function cleanInputUrl(value) {
 function getPlatform(url) {
   const value = url.toLowerCase();
   if (value.includes("instagram.com") || value.includes("instagr.am")) return "instagram";
-  if (value.includes("tiktok.com") || value.includes("://tiktok.com") || value.includes("://tiktok.com")) return "tiktok";
+  if (value.includes("tiktok.com") || value.includes("://tiktok.com")) return "tiktok";
   if (value.includes("facebook.com") || value.includes("fb.watch")) return "facebook";
   if (value.includes("pinterest.com") || value.includes("pin.it")) return "pinterest";
   if (value.includes("twitter.com") || value.includes("x.com")) return "twitter";
@@ -46,29 +46,7 @@ function getPlatform(url) {
 }
 
 // ============================================================
-//OPENGRAPH INSTAGRAM SCRAPER (Fixes Audio Issues)
-// ============================================================
-async function fetchInstagramDirectMedia(targetUrl) {
-  try {
-    const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      },
-    });
-    if (!response.ok) return null;
-
-    const html = await response.text();
-    const videoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i);
-    return videoMatch && videoMatch[1] ? videoMatch[1].replace(/&amp;/g, "&") : null;
-  } catch (error) {
-    console.error("[OG SCRAPER ERROR]", error?.message || error);
-    return null;
-  }
-}
-
-// ============================================================
-//PROCESS RUNNER
+// PROCESS RUNNER
 // ============================================================
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
@@ -87,10 +65,7 @@ function runCommand(command, args) {
 }
 
 // ============================================================
-// FINAL EXTRACT ENDPOINT (Multi-Quality & Audio-Guaranteed)
-// ============================================================
-// ============================================================
-// EXTRACT ENDPOINT (Fixed for Audio & Pinterest Streams)
+// EXTRACT ENDPOINT
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
@@ -101,7 +76,6 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // Run yt-dlp to extract metadata JSON
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -117,7 +91,6 @@ app.post("/api/extract", async (req, res) => {
     
     let qualities = [];
 
-    // 1. If a direct root progressive URL exists (common for Pinterest & Twitter/X), use it first
     if (metadata.url) {
       qualities.push({
         id: metadata.url,
@@ -129,7 +102,6 @@ app.post("/api/extract", async (req, res) => {
       });
     }
 
-    // 2. Map formatted streams if present, ensuring we prioritize or include audio
     if (metadata.formats && Array.isArray(metadata.formats)) {
       const validFormats = metadata.formats.filter(f => f.url);
       
@@ -137,7 +109,6 @@ app.post("/api/extract", async (req, res) => {
         const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
         const hasAudio = fmt.acodec && fmt.acodec !== 'none';
 
-        // Only add streams that have video. Prefer ones with audio, or fallback safely.
         if (hasVideo) {
           qualities.push({
             id: fmt.url,
@@ -151,13 +122,11 @@ app.post("/api/extract", async (req, res) => {
       }
     }
 
-    // Sort qualities so formats with audio come first, and higher resolutions rank higher
     qualities.sort((a, b) => {
       if (a.hasAudio !== b.hasAudio) return b.hasAudio ? 1 : -1;
       return (b.height || 0) - (a.height || 0);
     });
 
-    // Remove duplicates based on resolution label
     const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
 
     if (uniqueQualities.length === 0) {
@@ -184,4 +153,3 @@ app.get("/", (req, res) => res.json({ success: true, service: "StreamBox Extract
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`STREAMBOX EXTRACT API running on port ${PORT}`);
 });
- 
