@@ -45,51 +45,43 @@ function getPlatform(url) {
 }
 
 // ============================================================
-// REDIRECT RESOLVER ENGINE (Fixes pin.it Shortened Links)
+// DIRECT OPENGRAPH SCRAPER (Bypasses Pinterest 404 & Instagram Blocks)
 // ============================================================
-function expandShortenedUrl(targetUrl) {
-  return new Promise((resolve) => {
-    try {
-      const urlObj = new URL(targetUrl);
-      const client = urlObj.protocol === "https:" ? https : http;
-
-      client.request(targetUrl, { 
-        method: "HEAD", 
-        headers: { "User-Agent": USER_AGENT } 
-      }, (res) => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          const resolvedUrl = new URL(res.headers.location, targetUrl).href;
-          resolve(resolvedUrl);
-        } else {
-          resolve(targetUrl);
-        }
-      }).on("error", () => resolve(targetUrl)).end();
-    } catch (_) {
-      resolve(targetUrl);
-    }
-  });
-}
-
-// ============================================================
-// STATIC API PROXY GATEWAY (Optional Fallback Wrapper)
-// ============================================================
-async function fetchViaPublicApi(targetUrl) {
+async function fetchDirectMediaMeta(targetUrl, platformName) {
   try {
-    const apiRes = await fetch(`https://tikwm.com{encodeURIComponent(targetUrl)}`, {
-      headers: { "User-Agent": USER_AGENT },
-    });
-    const json = await apiRes.json();
-    if (json && json.code === 0 && json.data && json.data.play) {
-      return {
-        url: json.data.play,
-        title: json.data.title || "Social Media Video",
-        thumbnail: json.data.cover || null,
-      };
+    let fetchUrl = targetUrl;
+    if (targetUrl.includes("pin.it") || targetUrl.includes("fb.watch")) {
+      const initialRes = await new Promise((resolve) => {
+        const client = targetUrl.startsWith("https") ? https : http;
+        client.request(targetUrl, { method: "HEAD", headers: { "User-Agent": USER_AGENT } }, (res) => {
+          resolve(res.headers.location ? new URL(res.headers.location, targetUrl).href : targetUrl);
+        }).on("error", () => resolve(targetUrl)).end();
+      });
+      fetchUrl = initialRes;
     }
-  } catch (e) {
-    console.error("[PUBLIC API FALLBACK ERROR]", e.message);
+
+    const response = await fetch(fetchUrl, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": `https://www.${platformName}.com/`,
+      },
+    });
+    if (!response.ok) return null;
+
+    const html = await response.text();
+    const videoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) || 
+                       html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i) ||
+                       html.match(/"video_url"\s*:\s*"([^"]+)"/i);
+                       
+    if (videoMatch && videoMatch[1]) {
+      return videoMatch[1].replace(/&amp;/g, "&").replace(/u0026/g, "&").replace(/\\/g, "");
+    }
+    return null;
+  } catch (error) {
+    console.error(`[${platformName.toUpperCase()} SCRAPER ERROR]`, error?.message || error);
+    return null;
   }
-  return null;
 }
 
 function runCommand(command, args) {
@@ -133,7 +125,7 @@ app.get("/api/download-proxy", (req, res) => {
 
   ffmpegProcess.stdout.pipe(res);
 
-  ffmpegProcess.on("close", (code) => {
+  ffmpegProcess.on("close", () => {
     res.end();
   });
 
@@ -143,22 +135,37 @@ app.get("/api/download-proxy", (req, res) => {
 });
 
 // ============================================================
-// CORE EXTRACTION APIS WITH FIXED MULTI-STREAM PIPELINES
+// EXTRACT ENDPOINT
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
-    let inputUrl = cleanInputUrl(req.body?.url);
+    const inputUrl = cleanInputUrl(req.body?.url);
     if (!inputUrl || !isValidHttpUrl(inputUrl)) {
       return res.status(400).json({ success: false, error: "Please provide a valid video URL." });
     }
 
-    // Fix Pinterest Step 1: Force resolution of shortened pin.it URLs
-    if (inputUrl.includes("pin.it")) {
-      inputUrl = await expandShortenedUrl(inputUrl);
-    }
-
     const platform = getPlatform(inputUrl);
 
+    // Step 1: For Pinterest and Instagram, bypass cloud IP blocks instantly using Direct Scraper
+    if (platform === "pinterest" || platform === "instagram") {
+      const directUrl = await fetchDirectMediaMeta(inputUrl, platform);
+      if (directUrl) {
+        return res.json({
+          success: true,
+          platform,
+          title: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Video`,
+          thumbnail: null,
+          qualities: [{
+            id: directUrl,
+            label: "HD Quality (With Audio)",
+            hasAudio: true,
+            previewUrl: directUrl,
+          }],
+        });
+      }
+    }
+
+    // Step 2: Fallback to yt-dlp for other platforms
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -166,40 +173,16 @@ app.post("/api/extract", async (req, res) => {
       "--dump-single-json",
       "--skip-download",
       "--geo-bypass",
-      // Fix Instagram Audio Step 1: Force yt-dlp to request highest combined format or explicit mux structures
-      "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
 
-    // Fix Instagram Audio Step 2: Inject authenticated session cookie tracking parameter structures if file is present
     if (platform === "instagram" && fs.existsSync(COOKIES_PATH)) {
       args.push("--cookies", COOKIES_PATH);
     }
 
-    let metadata;
-    try {
-      const stdout = await runCommand(YTDLP_PATH, args);
-      metadata = JSON.parse(stdout.trim());
-    } catch (err) {
-      // Direct Fallback Gateway execution if yt-dlp layer meets scraper blocks
-      const fallbackData = await fetchViaPublicApi(inputUrl);
-      if (fallbackData && fallbackData.url) {
-        return res.json({
-          success: true,
-          platform,
-          title: fallbackData.title,
-          thumbnail: fallbackData.thumbnail,
-          qualities: [{
-            id: fallbackData.url,
-            label: "HD Quality (Muxed With Audio)",
-            hasAudio: true,
-            previewUrl: fallbackData.url,
-          }],
-        });
-      }
-      throw err;
-    }
+    const stdout = await runCommand(YTDLP_PATH, args);
+    const metadata = JSON.parse(stdout.trim());
     
     let qualities = [];
 
@@ -207,7 +190,6 @@ app.post("/api/extract", async (req, res) => {
       const isStream = metadata.url.includes(".m3u8") || metadata.url.includes(".mpd");
       let downloadUrl = metadata.url;
 
-      // Fix Pinterest Step 2: Automatically convert streaming playlists using our proxy endpoint
       if (isStream) {
         downloadUrl = `${req.protocol}://${req.get("host")}/api/download-proxy?url=${encodeURIComponent(metadata.url)}`;
       }
@@ -217,7 +199,7 @@ app.post("/api/extract", async (req, res) => {
         label: metadata.height ? `${metadata.height}p (HD)` : "Best Available Quality",
         height: metadata.height || null,
         width: metadata.width || null,
-        hasAudio: isStream ? true : (metadata.acodec && metadata.acodec !== 'none'),
+        hasAudio: true,
         previewUrl: metadata.url,
       });
     }
@@ -241,14 +223,13 @@ app.post("/api/extract", async (req, res) => {
             label: fmt.height ? `${fmt.height}p` : (fmt.format_note || 'Standard Quality'),
             height: fmt.height || null,
             width: fmt.width || null,
-            hasAudio: isStream ? true : (hasAudio || fmt.acodec !== undefined),
+            hasAudio: hasAudio,
             previewUrl: fmt.url,
           });
         }
       }
     }
 
-    // Sort: Bubbles formats containing confirmed audio tracks up to the top
     qualities.sort((a, b) => {
       if (a.hasAudio !== b.hasAudio) return b.hasAudio ? -1 : 1;
       return (b.height || 0) - (a.height || 0);
