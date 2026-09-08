@@ -89,6 +89,9 @@ function runCommand(command, args) {
 // ============================================================
 // FINAL EXTRACT ENDPOINT (Multi-Quality & Audio-Guaranteed)
 // ============================================================
+// ============================================================
+// EXTRACT ENDPOINT (Fixed for Audio & Pinterest Streams)
+// ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
     const inputUrl = cleanInputUrl(req.body?.url);
@@ -98,7 +101,7 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // Run yt-dlp to extract full format matrices and metadata JSON
+    // Run yt-dlp to extract metadata JSON
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -114,16 +117,27 @@ app.post("/api/extract", async (req, res) => {
     
     let qualities = [];
 
-    // Map all available formats if present
+    // 1. If a direct root progressive URL exists (common for Pinterest & Twitter/X), use it first
+    if (metadata.url) {
+      qualities.push({
+        id: metadata.url,
+        label: metadata.height ? `${metadata.height}p` : "Best Available Quality",
+        height: metadata.height || null,
+        width: metadata.width || null,
+        hasAudio: true,
+        previewUrl: metadata.url,
+      });
+    }
+
+    // 2. Map formatted streams if present, ensuring we prioritize or include audio
     if (metadata.formats && Array.isArray(metadata.formats)) {
-      // Filter for formats that contain a valid download link
       const validFormats = metadata.formats.filter(f => f.url);
       
-      // Look for pre-combined formats or best video streams with audio tracks
       for (const fmt of validFormats) {
         const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
         const hasAudio = fmt.acodec && fmt.acodec !== 'none';
 
+        // Only add streams that have video. Prefer ones with audio, or fallback safely.
         if (hasVideo) {
           qualities.push({
             id: fmt.url,
@@ -137,19 +151,13 @@ app.post("/api/extract", async (req, res) => {
       }
     }
 
-    // Fallback if no detailed format array was isolated
-    if (qualities.length === 0 && metadata.url) {
-      qualities.push({
-        id: metadata.url,
-        label: "Best Available Quality",
-        height: metadata.height || null,
-        width: metadata.width || null,
-        hasAudio: true,
-        previewUrl: metadata.url,
-      });
-    }
+    // Sort qualities so formats with audio come first, and higher resolutions rank higher
+    qualities.sort((a, b) => {
+      if (a.hasAudio !== b.hasAudio) return b.hasAudio ? 1 : -1;
+      return (b.height || 0) - (a.height || 0);
+    });
 
-    // Remove duplicates based on resolution label or ID
+    // Remove duplicates based on resolution label
     const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
 
     if (uniqueQualities.length === 0) {
