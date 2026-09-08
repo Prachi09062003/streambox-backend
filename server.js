@@ -1,7 +1,5 @@
 const express = require("express");
 const cors = require("cors");
-const http = require("http");
-const https = require("https");
 const { spawn } = require("child_process");
 
 const app = express();
@@ -16,6 +14,9 @@ const YTDLP_PATH = process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// ============================================================
+// HELPERS
+// ============================================================
 function isValidHttpUrl(value) {
   try {
     const url = new URL(value);
@@ -40,82 +41,75 @@ function getPlatform(url) {
   return "generic";
 }
 
-// ============================================================
-// UNIVERSAL MOBILE SCRAPER (Bypasses Cloud IP & Bot Blocks)
-// ============================================================
-async function fetchSocialMediaDirectLink(targetUrl) {
-  try {
-    let fetchUrl = targetUrl;
-    
-    // Resolve short-links like pin.it, fb.watch, or t.co
-    if (targetUrl.includes("pin.it") || targetUrl.includes("fb.watch") || targetUrl.includes("t.co")) {
-      fetchUrl = await new Promise((resolve) => {
-        const client = targetUrl.startsWith("https") ? https : http;
-        client.request(targetUrl, { method: "HEAD", headers: { "User-Agent": USER_AGENT } }, (res) => {
-          resolve(res.headers.location ? new URL(res.headers.location, targetUrl).href : targetUrl);
-        }).on("error", () => resolve(targetUrl)).end();
-      });
-    }
-
-    const response = await fetch(fetchUrl, {
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-      },
-    });
-
-    if (!response.ok) return null;
-    const html = await response.text();
-
-    let videoUrl = null;
-    let title = "StreamBox Video";
-
-    // Extract OpenGraph tags which natively contain pre-muxed video files with audio
-    const ogVideoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) ||
-                         html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i) ||
-                         html.match(/"video_url"\s*:\s*"([^"]+)"/i) ||
-                         html.match(/"contentUrl"\s*:\s*"([^"]+\.mp4[^"]*)"/i);
-    
-    if (ogVideoMatch && ogVideoMatch[1]) {
-      videoUrl = ogVideoMatch[1];
-    }
-
-    const ogTitleMatch = html.match(/<meta\s+property="og:title"\s+content="([^"]+)"/i);
-    if (ogTitleMatch && ogTitleMatch[1]) {
-      title = ogTitleMatch[1];
-    }
-
-    if (videoUrl) {
-      return {
-        url: videoUrl.replace(/&amp;/g, "&").replace(/u0026/g, "&").replace(/\\/g, ""),
-        title: title.trim(),
-      };
-    }
-  } catch (err) {
-    console.error("[SCRAPER ERROR]", err.message);
-  }
-  return null;
-}
-
-function runCommand(command, args) {
+function runCommand(command, args, { timeoutMs = 45000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });
     let stdout = "";
     let stderr = "";
 
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("The extractor took too long and was stopped."));
+    }, timeoutMs);
+
     child.stdout.on("data", (data) => (stdout += data.toString()));
     child.stderr.on("data", (data) => (stderr += data.toString()));
 
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
     child.on("close", (code) => {
+      clearTimeout(timer);
       if (code === 0) resolve(stdout);
-      else reject(new Error(stderr.trim() || `Command failed with code ${code}`));
+      else {
+        const lastLine = stderr.trim().split("\n").filter(Boolean).pop();
+        reject(new Error(lastLine || `Command failed with code ${code}`));
+      }
     });
   });
 }
 
+function friendlyExtractError(rawMessage, platform) {
+  const msg = (rawMessage || "").toLowerCase();
+  if (msg.includes("login") || msg.includes("private") || msg.includes("rate-limit") || msg.includes("429")) {
+    return `This ${platform} link needs a login, is private, or is being rate-limited right now.`;
+  }
+  if (msg.includes("unsupported url")) {
+    return "That link isn't a supported video page.";
+  }
+  if (msg.includes("unable to extract") || msg.includes("no video formats")) {
+    return `Could not find a playable video on that ${platform} link.`;
+  }
+  return "Could not extract playable video from this link.";
+}
+
+// A format is only safe to hand to a plain client-side GET request if it's
+// already progressive (both video AND audio in one file) and served over
+// plain HTTP(S), not HLS (.m3u8) or DASH manifests, which a bare GET can't
+// download meaningfully (you'd just save the playlist text, not the media).
+function isDirectDownloadable(fmt) {
+  if (!fmt || !fmt.url) return false;
+  const hasVideo = fmt.vcodec && fmt.vcodec !== "none";
+  const hasAudio = fmt.acodec && fmt.acodec !== "none";
+  const protocol = (fmt.protocol || "").toLowerCase();
+  const looksLikeManifest =
+    protocol.includes("m3u8") ||
+    protocol.includes("dash") ||
+    fmt.url.includes(".m3u8") ||
+    fmt.url.includes(".mpd");
+  return hasVideo && hasAudio && !looksLikeManifest;
+}
+
 // ============================================================
-// API EXTRACTION ROUTE
+// EXTRACTION
+// Everything happens here; there is no server-side download route.
+// The client downloads the returned URL directly, so we only ever
+// return formats that are safe for a plain client-side GET, plus
+// whatever headers (Referer/User-Agent/cookies) that specific CDN
+// URL actually needs, since Instagram/Facebook/TikTok links are
+// often referer-locked and will 403 without them.
 // ============================================================
 app.post("/api/extract", async (req, res) => {
   try {
@@ -126,79 +120,69 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
-    // Step 1: Attempt direct OpenGraph meta-scraping first (bypasses bot blocks & audio separation)
-    const scrapedMedia = await fetchSocialMediaDirectLink(inputUrl);
-    if (scrapedMedia && scrapedMedia.url) {
-      return res.json({
-        success: true,
-        platform,
-        title: scrapedMedia.title,
-        thumbnail: null,
-        qualities: [{
-          id: scrapedMedia.url,
-          label: "HD Quality (With Audio)",
-          hasAudio: true,
-          previewUrl: scrapedMedia.url,
-        }],
-      });
-    }
-
-    // Step 2: Fallback to yt-dlp with mobile emulation if meta-scraping fails
     const args = [
       "--ignore-config",
       "--no-playlist",
       "--no-warnings",
+      "--geo-bypass",
+      "--socket-timeout", "30",
+      "--retries", "3",
+      "--user-agent", USER_AGENT,
       "--dump-single-json",
       "--skip-download",
-      "--geo-bypass",
-      "--user-agent", USER_AGENT,
       inputUrl,
     ];
 
-    const stdout = await runCommand(YTDLP_PATH, args);
-    const metadata = JSON.parse(stdout.trim());
-    
-    let qualities = [];
-
-    if (metadata.url) {
-      qualities.push({
-        id: metadata.url,
-        label: metadata.height ? `${metadata.height}p` : "Best Available Quality",
-        height: metadata.height || null,
-        width: metadata.width || null,
-        hasAudio: true,
-        previewUrl: metadata.url,
-      });
+    let stdout;
+    try {
+      stdout = await runCommand(YTDLP_PATH, args, { timeoutMs: 45000 });
+    } catch (err) {
+      throw new Error(friendlyExtractError(err.message, platform));
     }
 
-    if (metadata.formats && Array.isArray(metadata.formats)) {
-      const validFormats = metadata.formats.filter(f => f.url);
-      for (const fmt of validFormats) {
-        const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
-        const hasAudio = fmt.acodec && fmt.acodec !== 'none';
-
-        if (hasVideo) {
-          qualities.push({
-            id: fmt.url,
-            label: fmt.height ? `${fmt.height}p` : (fmt.format_note || 'Standard Quality'),
-            height: fmt.height || null,
-            width: fmt.width || null,
-            hasAudio: hasAudio,
-            previewUrl: fmt.url,
-          });
-        }
-      }
+    let metadata;
+    try {
+      metadata = JSON.parse(stdout.trim());
+    } catch {
+      throw new Error("The extractor returned an unreadable response.");
     }
 
-    qualities.sort((a, b) => {
-      if (a.hasAudio !== b.hasAudio) return b.hasAudio ? 1 : -1;
-      return (b.height || 0) - (a.height || 0);
-    });
+    const formats = Array.isArray(metadata.formats) ? metadata.formats : [];
+    let candidates = formats.filter(isDirectDownloadable);
 
-    const uniqueQualities = Array.from(new Map(qualities.map(q => [q.label, q])).values());
+    // Some extractors only ever populate the top-level fields (not a
+    // formats[] array) for single-format platforms - fall back to that.
+    if (candidates.length === 0 && isDirectDownloadable(metadata)) {
+      candidates = [metadata];
+    }
 
-    if (uniqueQualities.length === 0) {
-      throw new Error("Could not extract playable stream URLs for this link.");
+    // Keep the best (highest bitrate) entry per height, highest first.
+    const byHeight = new Map();
+    for (const fmt of candidates) {
+      const h = fmt.height || 0;
+      const existing = byHeight.get(h);
+      if (!existing || (fmt.tbr || 0) > (existing.tbr || 0)) byHeight.set(h, fmt);
+    }
+
+    const sorted = Array.from(byHeight.values())
+      .sort((a, b) => (b.height || 0) - (a.height || 0))
+      .slice(0, 4);
+
+    const qualities = sorted.map((fmt) => ({
+      id: fmt.url,
+      label: fmt.height ? `${fmt.height}p` : fmt.format_note || "Available Quality",
+      height: fmt.height || null,
+      width: fmt.width || null,
+      hasAudio: true,
+      // Headers this exact CDN URL needs to be fetched successfully.
+      // yt-dlp already resolves the right Referer/cookies per platform.
+      headers: fmt.http_headers || {},
+    }));
+
+    if (qualities.length === 0) {
+      throw new Error(
+        `No direct, downloadable video file was found for this ${platform} link - only a streaming manifest is available, which this app can't save.`
+      );
     }
 
     return res.json({
@@ -206,12 +190,12 @@ app.post("/api/extract", async (req, res) => {
       platform,
       title: metadata.title || "StreamBox Video",
       thumbnail: metadata.thumbnail || null,
-      qualities: uniqueQualities,
+      qualities,
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
-      error: error.message?.length > 200 ? "Unable to extract video link." : error.message,
+      error: error.message?.length > 250 ? "Unable to extract video link." : error.message,
     });
   }
 });
