@@ -12,15 +12,9 @@ const USER_AGENT =
 
 const YTDLP_PATH = process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
 
-// ============================================================
-// MIDDLEWARE
-// ============================================================
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-// ============================================================
-// HELPERS & VALIDATORS
-// ============================================================
 function isValidHttpUrl(value) {
   try {
     const url = new URL(value);
@@ -46,8 +40,45 @@ function getPlatform(url) {
 }
 
 // ============================================================
-// PROCESS RUNNER
+// 1. DIRECT OPENGRAPH SCRAPER (Instagram & Pinterest)
 // ============================================================
+async function fetchDirectMediaMeta(targetUrl, platformName) {
+  try {
+    let fetchUrl = targetUrl;
+    // Resolve short links (like pin.it)
+    if (targetUrl.includes("pin.it") || targetUrl.includes("fb.watch")) {
+      const initialRes = await fetch(targetUrl, { 
+        method: "HEAD", 
+        redirect: "follow", 
+        headers: { "User-Agent": USER_AGENT } 
+      });
+      fetchUrl = initialRes.url;
+    }
+
+    const response = await fetch(fetchUrl, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": `https://www.${platformName}.com/`,
+      },
+    });
+    if (!response.ok) return null;
+
+    const html = await response.text();
+    const videoMatch = html.match(/<meta\s+property="og:video"\s+content="([^"]+)"/i) || 
+                       html.match(/<meta\s+property="og:video:secure_url"\s+content="([^"]+)"/i) ||
+                       html.match(/"video_url"\s*:\s*"([^"]+)"/i);
+                       
+    if (videoMatch && videoMatch[1]) {
+      return videoMatch[1].replace(/&amp;/g, "&").replace(/u0026/g, "&").replace(/\\/g, "");
+    }
+    return null;
+  } catch (error) {
+    console.error(`[${platformName.toUpperCase()} SCRAPER ERROR]`, error?.message || error);
+    return null;
+  }
+}
+
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true });
@@ -76,6 +107,26 @@ app.post("/api/extract", async (req, res) => {
 
     const platform = getPlatform(inputUrl);
 
+    // Step A: Try direct Meta Scraper for Instagram and Pinterest to guarantee audio and avoid blocks
+    if (platform === "instagram" || platform === "pinterest") {
+      const directUrl = await fetchDirectMediaMeta(inputUrl, platform);
+      if (directUrl) {
+        return res.json({
+          success: true,
+          platform,
+          title: `${platform.charAt(0).toUpperCase() + platform.slice(1)} Video`,
+          thumbnail: null,
+          qualities: [{
+            id: directUrl,
+            label: "HD Quality (With Audio)",
+            hasAudio: true,
+            previewUrl: directUrl,
+          }],
+        });
+      }
+    }
+
+    // Step B: Fallback to yt-dlp for other platforms (Facebook, Twitter, TikTok)
     const args = [
       "--ignore-config",
       "--no-playlist",
@@ -83,7 +134,6 @@ app.post("/api/extract", async (req, res) => {
       "--dump-single-json",
       "--skip-download",
       "--geo-bypass",
-      "--add-header", "Referer:https://www.pinterest.com/",
       "--user-agent", USER_AGENT,
       inputUrl,
     ];
@@ -106,7 +156,6 @@ app.post("/api/extract", async (req, res) => {
 
     if (metadata.formats && Array.isArray(metadata.formats)) {
       const validFormats = metadata.formats.filter(f => f.url);
-      
       for (const fmt of validFormats) {
         const hasVideo = fmt.vcodec && fmt.vcodec !== 'none';
         const hasAudio = fmt.acodec && fmt.acodec !== 'none';
