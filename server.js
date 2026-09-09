@@ -36,7 +36,7 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 
 // ============================================================
-// PLATFORM DETECTION
+// PLATFORM DETECTION & REDIRECT RESOLVER
 // ============================================================
 
 function detectPlatform(url) {
@@ -58,59 +58,64 @@ function isValidHttpUrl(value) {
   }
 }
 
-// ============================================================
-// REDIRECT RESOLVER (Bypasses Multi-Hop Pinterest Redirects)
-// ============================================================
-
+// Bypasses shortlink wrappers automatically
 async function unwrapUrl(targetUrl) {
   if (!targetUrl.includes("pin.it") && !targetUrl.includes("vm.tiktok.com")) {
     return targetUrl;
   }
   
-  console.log(`[UNWRAP] Unwrapping shortlink: ${targetUrl}`);
-  
+  console.log(`[UNWRAP] Resolving shortlink: ${targetUrl}`);
   try {
-    // By omitting 'redirect: "manual"', fetch automatically follows the entire chain 
-    // of redirects (double/triple bounces) until it reaches the final web page.
     const response = await fetch(targetUrl, {
       method: "GET",
-      headers: {
-        "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9"
-      }
+      headers: { "User-Agent": USER_AGENT, "Accept": "*/*" }
     });
-
     if (response.url) {
-      // Clean up tracking parameters to give yt-dlp a clean, canonical URL
       const cleanUrl = response.url.split('?')[0];
-      console.log(`[UNWRAP] Resolved to final URL: ${cleanUrl}`);
+      console.log(`[UNWRAP] Resolved to: ${cleanUrl}`);
       return cleanUrl;
     }
-    
     return targetUrl;
   } catch (e) {
-    console.error("[UNWRAP ERROR]", e.message);
     return targetUrl;
   }
 }
-
-// ============================================================
-// SHARED YT-DLP ARGUMENTS
-// ============================================================
 
 function getStandardArgs() {
   return [
     "--geo-bypass",
     "--impersonate", "chrome",
-    "--add-header", "Referer: https://www.pinterest.com/",
     "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
     "--no-cache-dir",
   ];
 }
 
+// Helper to extract unique heights from yt-dlp formats
+function getAvailableHeights(info) {
+  const formats = Array.isArray(info.formats) ? info.formats : [];
+  const heights = new Set();
+  
+  formats.forEach(f => {
+    // Only capture formats that have video and a valid height
+    if (f.vcodec !== 'none' && typeof f.height === 'number' && f.height > 0) {
+      heights.add(f.height);
+    }
+  });
+  
+  // Sort descending and take top 5 options
+  const sortedHeights = Array.from(heights).sort((a, b) => b - a).slice(0, 5);
+  
+  // Fallbacks if formatting metadata is missing
+  if (sortedHeights.length === 0) {
+    if (info.height) return [info.height];
+    return [720]; 
+  }
+  
+  return sortedHeights;
+}
+
 // ============================================================
-// API: EXTRACT (Generates Tunnel Link)
+// API: EXTRACT 
 // ============================================================
 
 app.post("/api/extract", async (req, res) => {
@@ -129,6 +134,65 @@ app.post("/api/extract", async (req, res) => {
   url = await unwrapUrl(url);
   console.log(`[EXTRACT] ${platform}: ${url}`);
 
+  // ============================================================
+  // CUSTOM PINTEREST EXTRACTOR
+  // ============================================================
+  if (platform === "pinterest") {
+    try {
+      const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      const html = await response.text();
+      
+      let title = "Pinterest Video";
+      const titleMatch = html.match(/<meta property="og:title" content="([^"]+)"/i) || html.match(/<title>([^<]+)<\/title>/i);
+      if (titleMatch) title = titleMatch[1];
+      
+      let thumbnail = null;
+      const thumbMatch = html.match(/<meta property="og:image" content="([^"]+)"/i);
+      if (thumbMatch) thumbnail = thumbMatch[1];
+
+      let videoUrl = null;
+      const pinimgMatch = html.match(/(https:\/\/v\.pinimg\.com\/[^"]+\.mp4[^"]*)/i);
+      if (pinimgMatch) {
+          videoUrl = pinimgMatch[1].replace(/\\u002F/g, "/");
+      } else {
+          const ogMatch = html.match(/<meta property="og:video"\s+content="([^"]+)"/i);
+          if (ogMatch) videoUrl = ogMatch[1].replace(/\\u002F/g, "/");
+      }
+
+      if (videoUrl) {
+        console.log(`[PINTEREST SUCCESS] Scraped direct MP4: ${videoUrl}`);
+        return res.json({
+          success: true,
+          platform,
+          sourceUrl: url,
+          title,
+          thumbnail,
+          qualities: [
+            {
+              id: "pinterest-direct-mp4",
+              label: "Original Quality • Auto MP4",
+              height: 1080,
+              hasVideo: true,
+              hasAudio: true,
+              needsMerge: false,
+              url: videoUrl,
+              headers: {},
+              type: "progressive"
+            }
+          ]
+        });
+      } else {
+        return res.status(422).json({ success: false, error: "No MP4 video found on this Pinterest page." });
+      }
+    } catch (e) {
+      console.error("[PINTEREST SCRAPE ERROR]", e);
+      return res.status(500).json({ success: false, error: "Failed to scrape Pinterest video." });
+    }
+  }
+
+  // ============================================================
+  // YT-DLP FOR INSTAGRAM, TIKTOK, FACEBOOK, X
+  // ============================================================
   const args = [
     "--dump-single-json", 
     "--skip-download", 
@@ -146,9 +210,7 @@ app.post("/api/extract", async (req, res) => {
   child.stdout.on("data", (chunk) => stdout += chunk.toString());
   child.stderr.on("data", (chunk) => stderr += chunk.toString());
 
-  const timeout = setTimeout(() => {
-    child.kill("SIGKILL");
-  }, 30000);
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 30000);
 
   child.on("close", (code) => {
     clearTimeout(timeout);
@@ -160,22 +222,25 @@ app.post("/api/extract", async (req, res) => {
 
     try {
       const info = JSON.parse(stdout);
-
-      const proxyUrl = `${req.protocol}://${req.get("host")}/api/proxy?url=${encodeURIComponent(url)}`;
       
-      const qualities = [
-        {
-          id: "server-tunnel-mp4",
-          label: "Best Quality • MP4 (Optimized)",
-          height: 1080,
+      // Determine the available video heights from yt-dlp formats
+      const heights = getAvailableHeights(info);
+      
+      // Map the heights to proxy URLs
+      const qualities = heights.map((h) => {
+        const proxyUrl = `${req.protocol}://${req.get("host")}/api/proxy?url=${encodeURIComponent(url)}&height=${h}`;
+        return {
+          id: `server-tunnel-${h}p`,
+          label: `${h}p • Auto MP4`,
+          height: h,
           hasVideo: true,
           hasAudio: true,
           needsMerge: false,
           url: proxyUrl,
           headers: {},
           type: "progressive"
-        }
-      ];
+        };
+      });
 
       return res.json({
         success: true,
@@ -183,7 +248,7 @@ app.post("/api/extract", async (req, res) => {
         sourceUrl: url,
         title: info.title?.toString() || "Video",
         thumbnail: info.thumbnail?.toString() || null,
-        qualities,
+        qualities: qualities
       });
     } catch (e) {
       return res.status(500).json({ success: false, error: "Invalid JSON from extractor." });
@@ -192,11 +257,13 @@ app.post("/api/extract", async (req, res) => {
 });
 
 // ============================================================
-// API: SERVER PROXY DOWNLOADER
+// API: SERVER PROXY DOWNLOADER (With Targeted Heights)
 // ============================================================
 
 app.get("/api/proxy", async (req, res) => {
   let targetUrl = req.query.url;
+  const targetHeight = req.query.height;
+
   if (!targetUrl || !isValidHttpUrl(targetUrl)) {
     return res.status(400).send("Valid URL required");
   }
@@ -206,10 +273,19 @@ app.get("/api/proxy", async (req, res) => {
   const fileName = `streambox_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`;
   const filePath = path.join(os.tmpdir(), fileName);
 
-  console.log(`[PROXY START] Downloading pre-merged MP4 for: ${targetUrl}`);
+  console.log(`[PROXY START] Processing ${targetHeight ? targetHeight + 'p' : 'Best'} for: ${targetUrl}`);
+
+  // Determine the format filter based on the requested height
+  let formatFilter = "bv*+ba/b/best"; // Fallback to absolute best
+  if (targetHeight && !isNaN(parseInt(targetHeight))) {
+    const h = parseInt(targetHeight);
+    // Command yt-dlp to grab the best video less than or equal to the requested height, plus best audio
+    formatFilter = `bv*[height<=${h}]+ba/b[height<=${h}]/best`;
+  }
 
   const args = [
-    "-f", "b[ext=mp4]/best",
+    "-f", formatFilter,
+    "--merge-output-format", "mp4",
     "-o", filePath,
     "--quiet",
     "--no-warnings",
@@ -244,10 +320,9 @@ app.get("/api/proxy", async (req, res) => {
 // SYSTEM
 // ============================================================
 
-app.get("/", (req, res) => res.json({ success: true, status: "online", mode: "Pure Tunnel Pre-Merged MP4" }));
+app.get("/", (req, res) => res.json({ success: true, status: "online", mode: "Dynamic Proxy Active" }));
 app.use((req, res) => res.status(404).json({ success: false, error: "Not found." }));
 
 app.listen(PORT, () => {
   console.log(`StreamBox backend running on port ${PORT}`);
-  console.log(`Mode: Pure Tunnel Pre-Merged MP4 via /api/proxy active`);
 });
