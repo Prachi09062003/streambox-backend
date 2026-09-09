@@ -4,8 +4,6 @@ const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const https = require("https");
-const http = require("http");
 
 const app = express();
 
@@ -19,6 +17,9 @@ try {
 } catch (err) {
   console.log("[INIT] Auto-update skipped, using bundled version:", err.message);
 }
+
+const USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 // ============================================================
 // MIDDLEWARE
@@ -35,7 +36,7 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 
 // ============================================================
-// PLATFORM DETECTION & REDIRECT RESOLVER
+// PLATFORM DETECTION
 // ============================================================
 
 function detectPlatform(url) {
@@ -57,23 +58,42 @@ function isValidHttpUrl(value) {
   }
 }
 
-// FIX 1: Manually unwrap shortlinks (Pinterest) to prevent 500 crashes
-function unwrapUrl(url) {
-  return new Promise((resolve) => {
-    if (!url.includes("pin.it") && !url.includes("vm.tiktok.com")) {
-      return resolve(url);
-    }
-    
-    const client = url.startsWith("https") ? https : http;
-    const req = client.get(url, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        resolve(res.headers.location);
-      } else {
-        resolve(url);
+// ============================================================
+// REDIRECT RESOLVER (Bypasses Pinterest 403 / Login Blocks)
+// ============================================================
+
+async function unwrapUrl(targetUrl) {
+  if (!targetUrl.includes("pin.it") && !targetUrl.includes("vm.tiktok.com")) {
+    return targetUrl;
+  }
+  
+  console.log(`[UNWRAP] Unwrapping shortlink: ${targetUrl}`);
+  
+  try {
+    // We use native fetch to securely inject the iPhone User-Agent.
+    // redirect: "manual" prevents it from auto-following, allowing us to grab the true URL.
+    const response = await fetch(targetUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
       }
     });
-    req.on("error", () => resolve(url));
-  });
+
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (location) {
+        console.log(`[UNWRAP] Resolved to: ${location}`);
+        return location;
+      }
+    }
+    return targetUrl;
+  } catch (e) {
+    console.error("[UNWRAP ERROR]", e.message);
+    return targetUrl;
+  }
 }
 
 // ============================================================
@@ -84,6 +104,8 @@ function getStandardArgs() {
   return [
     "--geo-bypass",
     "--impersonate", "chrome",
+    // We add a fake Referer header to trick Pinterest's hotlink protection
+    "--add-header", "Referer: https://www.pinterest.com/",
     "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
     "--no-cache-dir",
   ];
@@ -105,7 +127,7 @@ app.post("/api/extract", async (req, res) => {
     return res.status(400).json({ success: false, error: "Unsupported URL. Only social platforms are supported." });
   }
 
-  // Unwrap URL if it's a shortlink
+  // Unwrap URL if it's a shortlink to bypass initial bot detection
   url = await unwrapUrl(url);
   console.log(`[EXTRACT] ${platform}: ${url}`);
 
@@ -126,12 +148,15 @@ app.post("/api/extract", async (req, res) => {
   child.stdout.on("data", (chunk) => stdout += chunk.toString());
   child.stderr.on("data", (chunk) => stderr += chunk.toString());
 
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 30000);
+  const timeout = setTimeout(() => {
+    child.kill("SIGKILL");
+  }, 30000);
 
   child.on("close", (code) => {
     clearTimeout(timeout);
     
     if (code !== 0) {
+      console.error("[EXTRACTION FAILED]", stderr.trim());
       return res.status(500).json({ success: false, error: "Extraction failed or video requires login." });
     }
 
@@ -170,7 +195,7 @@ app.post("/api/extract", async (req, res) => {
 });
 
 // ============================================================
-// API: SERVER PROXY DOWNLOADER (Solves Audio & 500 Errors)
+// API: SERVER PROXY DOWNLOADER
 // ============================================================
 
 app.get("/api/proxy", async (req, res) => {
@@ -179,7 +204,7 @@ app.get("/api/proxy", async (req, res) => {
     return res.status(400).send("Valid URL required");
   }
 
-  // Unwrap URL if it's a shortlink
+  // Double check shortlinks for the proxy route
   targetUrl = await unwrapUrl(targetUrl);
 
   const fileName = `streambox_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`;
@@ -187,8 +212,7 @@ app.get("/api/proxy", async (req, res) => {
 
   console.log(`[PROXY START] Downloading pre-merged MP4 for: ${targetUrl}`);
 
-  // FIX 2: -f "b[ext=mp4]/best" forces yt-dlp to grab a pre-combined video+audio file.
-  // This bypasses FFmpeg merging entirely, preventing silent Instagram videos and 500 crashes.
+  // Force pre-combined video+audio file to prevent Instagram/Pinterest merging crashes
   const args = [
     "-f", "b[ext=mp4]/best",
     "-o", filePath,
