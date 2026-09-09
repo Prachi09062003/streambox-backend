@@ -1,13 +1,16 @@
 const express = require("express");
 const cors = require("cors");
 const { spawn, execSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const YTDLP_PATH = process.env.YTDLP_PATH || "yt-dlp";
 
-// Keep yt-dlp and its impersonation tools updated via pip
+// Keep yt-dlp updated on boot
 try {
   console.log("[INIT] Updating yt-dlp and dependencies via pip...");
   execSync(`python3 -m pip install -U --break-system-packages "yt-dlp[default,curl-cffi]"`, { stdio: "inherit" });
@@ -38,29 +41,13 @@ app.use(express.json({ limit: "1mb" }));
 
 function detectPlatform(url) {
   const value = url.toLowerCase();
-
-  if (value.includes("instagram.com") || value.includes("instagr.am")) {
-    return "instagram";
-  }
-  if (value.includes("facebook.com") || value.includes("fb.watch") || value.includes("fb.com")) {
-    return "facebook";
-  }
-  if (value.includes("tiktok.com") || value.includes("vm.tiktok.com")) {
-    return "tiktok";
-  }
-  if (value.includes("pinterest.com") || value.includes("pin.it")) {
-    return "pinterest";
-  }
-  if (value.includes("twitter.com") || value.includes("x.com")) {
-    return "twitter";
-  }
-
+  if (value.includes("instagram.com") || value.includes("instagr.am")) return "instagram";
+  if (value.includes("facebook.com") || value.includes("fb.watch") || value.includes("fb.com")) return "facebook";
+  if (value.includes("tiktok.com") || value.includes("vm.tiktok.com")) return "tiktok";
+  if (value.includes("pinterest.com") || value.includes("pin.it")) return "pinterest";
+  if (value.includes("twitter.com") || value.includes("x.com")) return "twitter";
   return "unknown";
 }
-
-// ============================================================
-// URL VALIDATION
-// ============================================================
 
 function isValidHttpUrl(value) {
   try {
@@ -72,27 +59,22 @@ function isValidHttpUrl(value) {
 }
 
 // ============================================================
-// SAFE HEADERS
+// SAFE HEADERS & HELPERS
 // ============================================================
 
 function getHeaders(format) {
   const result = {};
   const source = format?.http_headers || format?.headers || {};
-
   if (!source || typeof source !== "object") return result;
 
   for (const [key, value] of Object.entries(source)) {
     if (value == null) continue;
     const lower = key.toLowerCase();
-
     if (lower === "cookie") continue;
-
     if (
-      [
-        "user-agent", "referer", "origin", "accept", "accept-language",
-        "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-ch-ua",
-        "sec-ch-ua-mobile", "sec-ch-ua-platform",
-      ].includes(lower)
+      ["user-agent", "referer", "origin", "accept", "accept-language",
+       "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-ch-ua",
+       "sec-ch-ua-mobile", "sec-ch-ua-platform"].includes(lower)
     ) {
       result[key] = String(value);
     }
@@ -100,323 +82,200 @@ function getHeaders(format) {
   return result;
 }
 
-// ============================================================
-// MEDIA FORMAT HELPERS
-// ============================================================
-
 function isHttpMediaUrl(format) {
   if (!format || !format.url) return false;
   const url = String(format.url);
   if (!url.startsWith("http://") && !url.startsWith("https://")) return false;
   const lower = url.toLowerCase();
-  if (lower.includes(".m3u8") || lower.includes(".mpd") || lower.includes("m3u8") || lower.includes("dash")) {
-    return false;
-  }
+  if (lower.includes(".m3u8") || lower.includes(".mpd") || lower.includes("dash")) return false;
   return true;
 }
 
-function hasVideo(format) {
-  return format && format.vcodec && format.vcodec !== "none";
-}
-
-function hasAudio(format) {
-  return format && format.acodec && format.acodec !== "none";
-}
-
+function hasVideo(format) { return format && format.vcodec && format.vcodec !== "none"; }
+function hasAudio(format) { return format && format.acodec && format.acodec !== "none"; }
 function isMp4(format) {
   const ext = String(format?.ext || "").toLowerCase();
   const container = String(format?.container || "").toLowerCase();
   const url = String(format?.url || "").toLowerCase();
   return ext === "mp4" || container.includes("mp4") || url.includes(".mp4");
 }
-
 function heightOf(format) {
-  const height = Number(format?.height);
-  if (Number.isFinite(height) && height > 0) return height;
-  return null;
+  const h = Number(format?.height);
+  return Number.isFinite(h) && h > 0 ? h : null;
 }
-
 function bitrateOf(format) {
-  const values = [format?.tbr, format?.vbr, format?.abr, format?.filesize, format?.filesize_approx];
-  for (const value of values) {
-    const number = Number(value);
-    if (Number.isFinite(number) && number > 0) return number;
+  const values = [format?.tbr, format?.vbr, format?.abr, format?.filesize];
+  for (const v of values) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n;
   }
   return 0;
 }
 
 // ============================================================
-// FORMAT SORTING & BUILD QUALITIES
+// BUILD CDN QUALITIES
 // ============================================================
 
-function compareFormats(a, b) {
-  const heightA = heightOf(a) || 0;
-  const heightB = heightOf(b) || 0;
-  if (heightA !== heightB) return heightB - heightA;
-
-  const mp4A = isMp4(a) ? 1 : 0;
-  const mp4B = isMp4(b) ? 1 : 0;
-  if (mp4A !== mp4B) return mp4B - mp4A;
-
-  return bitrateOf(b) - bitrateOf(a);
-}
-
-function pickBest(formats, height) {
-  const matching = formats.filter((format) => heightOf(format) === height);
-  if (matching.length === 0) return null;
-  matching.sort(compareFormats);
-  return matching[0];
-}
-
-function buildQualities(info, platform) {
+function buildQualities(info) {
   const formats = Array.isArray(info.formats) ? info.formats : [];
   const directFormats = formats.filter(isHttpMediaUrl);
 
-  const progressiveMp4 = directFormats.filter((f) => hasVideo(f) && hasAudio(f) && isMp4(f));
-  const videoOnlyMp4 = directFormats.filter((f) => hasVideo(f) && !hasAudio(f) && isMp4(f));
-  const audioFormats = directFormats.filter((f) => !hasVideo(f) && hasAudio(f));
+  const progressiveMp4 = directFormats.filter(f => hasVideo(f) && hasAudio(f) && isMp4(f));
+  const videoOnlyMp4 = directFormats.filter(f => hasVideo(f) && !hasAudio(f) && isMp4(f));
+  const audioFormats = directFormats.filter(f => !hasVideo(f) && hasAudio(f));
+  
+  const bestAudio = audioFormats.sort((a, b) => bitrateOf(b) - bitrateOf(a))[0] || null;
+  const heights = new Set([...progressiveMp4.map(heightOf), ...videoOnlyMp4.map(heightOf)].filter(Boolean));
+  const sortedHeights = Array.from(heights).sort((a, b) => b - a).slice(0, 5);
 
-  audioFormats.sort((a, b) => {
-    const m4aA = isMp4(a) || String(a?.ext).toLowerCase() === "m4a" ? 1 : 0;
-    const m4aB = isMp4(b) || String(b?.ext).toLowerCase() === "m4a" ? 1 : 0;
-    if (m4aA !== m4aB) return m4aB - m4aA;
-    return bitrateOf(b) - bitrateOf(a);
-  });
-
-  const bestAudio = audioFormats.length > 0 ? audioFormats[0] : null;
-  const heights = new Set();
-
-  for (const format of progressiveMp4) {
-    const h = heightOf(format);
-    if (h) heights.add(h);
-  }
-  for (const format of videoOnlyMp4) {
-    const h = heightOf(format);
-    if (h) heights.add(h);
-  }
-
-  const sortedHeights = Array.from(heights).sort((a, b) => b - a).slice(0, 8);
   const qualities = [];
-
   for (const height of sortedHeights) {
-    const progressive = pickBest(progressiveMp4, height);
-
+    const progressive = progressiveMp4.find(f => heightOf(f) === height);
     if (progressive) {
       qualities.push({
-        id: `progressive-${height}-${progressive.format_id || "mp4"}`,
-        label: `${height}p`,
-        height,
-        width: Number(progressive.width) || null,
-        hasVideo: true,
-        hasAudio: true,
-        needsMerge: false,
-        url: progressive.url,
-        headers: getHeaders(progressive),
-        type: "progressive",
+        id: `progressive-${height}`, label: `${height}p Direct`, height,
+        hasVideo: true, hasAudio: true, needsMerge: false, url: progressive.url,
+        headers: getHeaders(progressive), type: "progressive"
       });
       continue;
     }
-
-    const videoOnly = pickBest(videoOnlyMp4, height);
+    const videoOnly = videoOnlyMp4.find(f => heightOf(f) === height);
     if (videoOnly && bestAudio) {
       qualities.push({
-        id: `merged-${height}-${videoOnly.format_id || "video"}`,
-        label: `${height}p • Video + Audio`,
-        height,
-        width: Number(videoOnly.width) || null,
+        id: `merged-${height}`, label: `${height}p • Video + Audio`, height,
+        hasVideo: true, hasAudio: true, needsMerge: true, videoUrl: videoOnly.url,
+        audioUrl: bestAudio.url, videoHeaders: getHeaders(videoOnly), audioHeaders: getHeaders(bestAudio),
+        type: "separate"
+      });
+    }
+  }
+  return qualities;
+}
+
+// ============================================================
+// CORE EXTRACTION COMMAND
+// ============================================================
+
+function getStandardArgs(url) {
+  return [
+    "--no-warnings", "--geo-bypass",
+    "--impersonate", "chrome",
+    "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
+    url
+  ];
+}
+
+// ============================================================
+// API: EXTRACT METADATA
+// ============================================================
+
+app.post("/api/extract", (req, res) => {
+  const url = req.body?.url?.toString().trim();
+  if (!url || !isValidHttpUrl(url)) {
+    return res.status(400).json({ success: false, error: "Please enter a valid HTTP/HTTPS URL." });
+  }
+
+  const platform = detectPlatform(url);
+  if (platform === "unknown") {
+    return res.status(400).json({ success: false, error: "Unsupported URL." });
+  }
+
+  console.log(`[EXTRACT] ${platform}: ${url}`);
+
+  const args = ["--dump-single-json", "--skip-download", "--no-playlist", ...getStandardArgs(url)];
+  const child = spawn(YTDLP_PATH, args);
+
+  let stdout = "";
+  let stderr = "";
+
+  child.stdout.on("data", (chunk) => stdout += chunk.toString());
+  child.stderr.on("data", (chunk) => stderr += chunk.toString());
+
+  const timeout = setTimeout(() => child.kill("SIGKILL"), 60000);
+
+  child.on("close", (code) => {
+    clearTimeout(timeout);
+    if (code !== 0) return res.status(500).json({ success: false, error: stderr.trim() || "Extraction failed." });
+
+    try {
+      const info = JSON.parse(stdout);
+      const qualities = buildQualities(info);
+
+      // THE FIX: Inject a Server-Converted MP4 at the top of the qualities list. 
+      // This routes the Flutter app to hit our /api/convert endpoint where FFmpeg does the heavy lifting.
+      const proxyUrl = `${req.protocol}://${req.get("host")}/api/convert?url=${encodeURIComponent(url)}`;
+      
+      qualities.unshift({
+        id: "server-processed-mp4",
+        label: "Best Quality • Auto MP4 (Recommended)",
+        height: 1080, 
         hasVideo: true,
         hasAudio: true,
-        needsMerge: true,
-        videoUrl: videoOnly.url,
-        audioUrl: bestAudio.url,
-        videoHeaders: getHeaders(videoOnly),
-        audioHeaders: getHeaders(bestAudio),
-        type: "separate",
-      });
-      continue;
-    }
-
-    if (videoOnly) {
-      qualities.push({
-        id: `video-only-${height}-${videoOnly.format_id || "video"}`,
-        label: `${height}p • No Audio`,
-        height,
-        width: Number(videoOnly.width) || null,
-        hasVideo: true,
-        hasAudio: false,
         needsMerge: false,
-        url: videoOnly.url,
-        headers: getHeaders(videoOnly),
-        audioUnavailable: true,
-        type: "video-only",
+        url: proxyUrl,
+        headers: {},
+        type: "progressive"
       });
+
+      return res.json({
+        success: true,
+        platform,
+        sourceUrl: url,
+        title: info.title?.toString() || "Video",
+        thumbnail: info.thumbnail?.toString() || null,
+        qualities,
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: "Invalid JSON from extractor." });
     }
-  }
-
-  if (platform === "pinterest") {
-    qualities.sort((a, b) => {
-      const aMp4 = a.type === "progressive" || a.type === "video-only";
-      const bMp4 = b.type === "progressive" || b.type === "video-only";
-      if (aMp4 !== bMp4) return bMp4 ? 1 : -1;
-      return (b.height || 0) - (a.height || 0);
-    });
-  }
-
-  return qualities.slice(0, 8);
-}
-
-// ============================================================
-// RUN YT-DLP
-// ============================================================
-
-function runYtDlp(url) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "--dump-single-json",
-      "--no-warnings",
-      "--skip-download",
-      "--no-playlist",
-      "--no-check-certificates",
-      "--no-cache-dir",
-      "--geo-bypass",
-
-      // THE FIX: Force browser impersonation utilizing the curl-cffi library we installed
-      "--impersonate",
-      "chrome",
-
-      "--user-agent",
-      USER_AGENT,
-
-      // Stabilizing extractors for specific platforms
-      "--extractor-args",
-      "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
-
-      "--socket-timeout",
-      "25",
-      "--retries",
-      "3",
-
-      url,
-    ];
-
-    const child = spawn(YTDLP_PATH, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    const timeout = setTimeout(() => {
-      try {
-        child.kill("SIGKILL");
-      } catch (_) {}
-      reject(new Error("Video extraction timed out."));
-    }, 60000);
-
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-
-      if (code !== 0) {
-        const message = stderr.trim() || "yt-dlp extraction failed.";
-        reject(new Error(message));
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(stdout);
-        resolve(parsed);
-      } catch (error) {
-        reject(new Error("yt-dlp returned invalid JSON."));
-      }
-    });
-  });
-}
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
-
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    service: "StreamBox Backend",
-    extraction: "yt-dlp with curl-cffi impersonation",
-    status: "online",
   });
 });
 
 // ============================================================
-// EXTRACTION API
+// API: SERVER DOWNLOAD & CONVERT TO MP4
 // ============================================================
 
-app.post("/api/extract", async (req, res) => {
-  try {
-    const url = req.body?.url?.toString().trim();
+app.get("/api/convert", (req, res) => {
+  const targetUrl = req.query.url;
+  if (!targetUrl || !isValidHttpUrl(targetUrl)) return res.status(400).send("Valid URL required");
 
-    if (!url) {
-      return res.status(400).json({ success: false, error: "Video URL is required." });
-    }
-    if (!isValidHttpUrl(url)) {
-      return res.status(400).json({ success: false, error: "Please enter a valid HTTP/HTTPS URL." });
-    }
+  const fileName = `streambox_${Date.now()}.mp4`;
+  const filePath = path.join(os.tmpdir(), fileName);
 
-    const platform = detectPlatform(url);
-    if (platform === "unknown") {
-      return res.status(400).json({
-        success: false,
-        error: "Unsupported or invalid URL. Only Instagram, Facebook, TikTok, Pinterest, and X (Twitter) links are supported.",
+  console.log(`[CONVERT] Stitching & formatting MP4 for: ${targetUrl}`);
+
+  // Instructs yt-dlp to download the best streams and use FFmpeg to package them into an MP4
+  const args = [
+    "-f", "b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]/b",
+    "--merge-output-format", "mp4",
+    "-o", filePath,
+    ...getStandardArgs(targetUrl)
+  ];
+
+  const child = spawn(YTDLP_PATH, args);
+
+  child.on("close", (code) => {
+    if (code === 0 && fs.existsSync(filePath)) {
+      console.log(`[CONVERT SUCCESS] Streaming ${fileName} to client`);
+      // Stream the compiled MP4 directly to the Flutter app
+      res.download(filePath, fileName, () => {
+        // Cleanup ephemeral storage after streaming
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       });
+    } else {
+      console.error(`[CONVERT FAILED] Exit code: ${code}`);
+      if (!res.headersSent) res.status(500).send("Server conversion failed");
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
-
-    console.log(`[EXTRACT] ${platform}: ${url}`);
-
-    const info = await runYtDlp(url);
-    const qualities = buildQualities(info, platform);
-
-    if (!qualities || qualities.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: "No downloadable MP4 video was found.",
-      });
-    }
-
-    return res.json({
-      success: true,
-      platform,
-      sourceUrl: url,
-      title: info.title?.toString() || "Video",
-      thumbnail: info.thumbnail ? info.thumbnail.toString() : null,
-      qualities,
-    });
-  } catch (error) {
-    console.error("[EXTRACT ERROR]", error);
-    return res.status(500).json({
-      success: false,
-      error: error?.message || "Unable to extract video.",
-    });
-  }
+  });
 });
 
 // ============================================================
-// 404 & SERVER START
+// SYSTEM
 // ============================================================
 
-app.use((req, res) => {
-  res.status(404).json({ success: false, error: "Endpoint not found." });
-});
+app.get("/", (req, res) => res.json({ success: true, status: "online", features: "Server-side MP4 conversion active" }));
+app.use((req, res) => res.status(404).json({ success: false, error: "Not found." }));
 
 app.listen(PORT, () => {
   console.log(`StreamBox backend running on port ${PORT}`);
