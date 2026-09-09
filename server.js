@@ -302,44 +302,39 @@ function isDirectDownloadable(fmt) {
 // ============================================================
 
 function getHeaders(fmt) {
-  const source =
-    fmt?.http_headers || {};
-
+  const source = fmt?.http_headers || {};
   const result = {};
 
   for (const [key, value] of Object.entries(source)) {
     if (!value) continue;
 
-    const lowerKey =
-      key.toLowerCase();
+    const lowerKey = key.toLowerCase();
 
-    // Do not expose cookies/session credentials.
+    // Securely exclude cookies
     if (lowerKey === "cookie") {
       continue;
     }
 
+    // Pass everything your Flutter client needs to bypass the Instagram CDN block
     if (
       lowerKey === "user-agent" ||
       lowerKey === "referer" ||
       lowerKey === "origin" ||
-      lowerKey === "accept"
+      lowerKey === "accept" ||
+      lowerKey.startsWith("sec-ch-") ||
+      lowerKey.startsWith("sec-fetch-")
     ) {
       result[key] = String(value);
     }
   }
 
-  // Always provide a User-Agent fallback.
-  const hasUserAgent = Object.keys(result).some(
-    (key) =>
-      key.toLowerCase() === "user-agent"
-  );
-
-  if (!hasUserAgent) {
+  if (!Object.keys(result).some(k => k.toLowerCase() === "user-agent")) {
     result["User-Agent"] = USER_AGENT;
   }
 
   return result;
 }
+
 
 // ============================================================
 // BITRATE / QUALITY HELPERS
@@ -937,28 +932,23 @@ app.post(
       //
       // ======================================================
 
-      const args = [
+            const args = [
         "--dump-single-json",
-
         "--no-warnings",
-
         "--skip-download",
-
         "--no-playlist",
-
         "--no-check-certificates",
-
+        "--no-cache-dir",          // Prevents Render disk-fill / memory leaks
+        "--rm-cache-dir",          // Clears out previous cache artifacts
         "--user-agent",
         USER_AGENT,
-
         "--socket-timeout",
         "20",
-
         "--retries",
         "2",
-
         cleanUrl,
       ];
+
 
       const stdout =
         await runCommand(
