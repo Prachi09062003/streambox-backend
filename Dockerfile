@@ -1,19 +1,20 @@
 FROM node:20-bookworm
 
 # ============================================================
-# SYSTEM PACKAGES (Stripped heavy utilities to prevent OOM)
+# SYSTEM PACKAGES (Added python3 to enable runtime self-updates)
 # ============================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     ffmpeg \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# YT-DLP (Kept purely for lightweight text extraction)
+# YT-DLP (Initial fetch)
 # ============================================================
 RUN curl -L \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    https://github.com \
     -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp
 
@@ -35,4 +36,3 @@ COPY . .
 EXPOSE 3000
 
 CMD ["node", "server.js"]
-

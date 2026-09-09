@@ -922,24 +922,28 @@ app.post(
       );
 
       // ======================================================
-      // yt-dlp
+      // RUNTIME YT-DLP HOTFIX HANDSHAKE
       // ======================================================
-      //
-      // IMPORTANT:
-      // No FFmpeg is executed here.
-      //
-      // We only ask yt-dlp for metadata and direct formats.
-      //
-      // ======================================================
+      // This forces the binary to synchronize its extractors 
+      // dynamically, neutralizing daily structural target layout changes.
+      try {
+        await runCommand(YTDLP_PATH, ["--update"], { timeoutMs: 15000 });
+        console.log("[YT-DLP] Binary extractors successfully synchronized.");
+      } catch (updateError) {
+        console.warn("[YT-DLP] Hotfix sync skipped or delayed:", updateError.message);
+      }
 
-            const args = [
+      // ======================================================
+      // EXECUTABLE HOOK CONFIGURATION
+      // ======================================================
+      const args = [
         "--dump-single-json",
         "--no-warnings",
         "--skip-download",
         "--no-playlist",
         "--no-check-certificates",
-        "--no-cache-dir",          // Prevents Render disk-fill / memory leaks
-        "--rm-cache-dir",          // Clears out previous cache artifacts
+        "--no-cache-dir",          
+        "--rm-cache-dir",          
         "--user-agent",
         USER_AGENT,
         "--socket-timeout",
@@ -948,7 +952,6 @@ app.post(
         "2",
         cleanUrl,
       ];
-
 
       const stdout =
         await runCommand(
@@ -974,9 +977,8 @@ app.post(
       }
 
       // ======================================================
-      // FORMATS
+      // FORMAT COMPILATION
       // ======================================================
-
       const formats =
         Array.isArray(info.formats)
           ? info.formats
@@ -994,45 +996,19 @@ app.post(
       }
 
       // ======================================================
-      // RESPONSE
+      // SUCCESS DISTRIBUTION DISPATCH
       // ======================================================
-
       const response = {
         success: true,
-
         platform,
-
         sourceUrl: cleanUrl,
-
-        title:
-          info.title ||
-          "Video",
-
-        thumbnail:
-          info.thumbnail ||
-          null,
-
-        duration:
-          Number.isFinite(
-            Number(info.duration)
-          )
-            ? Number(info.duration)
-            : null,
-
-        uploader:
-          info.uploader ||
-          info.channel ||
-          null,
-
+        title: info.title || "Video",
+        thumbnail: info.thumbnail || null,
+        duration: Number.isFinite(Number(info.duration)) ? Number(info.duration) : null,
+        uploader: info.uploader || info.channel || null,
         qualities,
-
-        // Useful debugging/diagnostic information.
-        // Does not contain the full yt-dlp object.
-        formatCount:
-          formats.length,
-
-        returnedQualityCount:
-          qualities.length,
+        formatCount: formats.length,
+        returnedQualityCount: qualities.length,
       };
 
       console.log(
@@ -1050,9 +1026,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
-
         platform,
-
         error:
           friendlyExtractError(
             error?.message,
@@ -1062,6 +1036,7 @@ app.post(
     }
   }
 );
+
 
 // ============================================================
 // HEALTH CHECK
