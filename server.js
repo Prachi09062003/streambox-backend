@@ -1,12 +1,20 @@
 const express = require("express");
 const cors = require("cors");
-const { spawn } = require("child_process");
+const { spawn, execSync } = require("child_process");
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const YTDLP_PATH =
   process.env.YTDLP_PATH || "/usr/local/bin/yt-dlp";
+
+// Automatically update yt-dlp on startup to handle frequent social media changes
+try {
+  console.log("[INIT] Updating yt-dlp to latest version...");
+  execSync(`${YTDLP_PATH} -U`, { stdio: "inherit" });
+} catch (err) {
+  console.log("[INIT] Auto-update skipped, using bundled binary:", err.message);
+}
 
 const USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
@@ -28,18 +36,11 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 
 // ============================================================
-// PLATFORM DETECTION
+// PLATFORM DETECTION (YouTube Excluded)
 // ============================================================
 
 function detectPlatform(url) {
   const value = url.toLowerCase();
-
-  if (
-    value.includes("youtube.com") ||
-    value.includes("youtu.be")
-  ) {
-    return "youtube";
-  }
 
   if (
     value.includes("instagram.com") ||
@@ -56,7 +57,10 @@ function detectPlatform(url) {
     return "facebook";
   }
 
-  if (value.includes("tiktok.com")) {
+  if (
+    value.includes("tiktok.com") ||
+    value.includes("vm.tiktok.com")
+  ) {
     return "tiktok";
   }
 
@@ -115,12 +119,10 @@ function getHeaders(format) {
 
     const lower = key.toLowerCase();
 
-    // Never expose cookies from yt-dlp to the client.
     if (lower === "cookie") {
       continue;
     }
 
-    // These are safe/useful for direct CDN requests.
     if (
       [
         "user-agent",
@@ -163,7 +165,6 @@ function isHttpMediaUrl(format) {
 
   const lower = url.toLowerCase();
 
-  // Do not send HLS/DASH manifests to Flutter as MP4.
   if (
     lower.includes(".m3u8") ||
     lower.includes(".mpd") ||
@@ -270,10 +271,6 @@ function compareFormats(a, b) {
   return bitrateB - bitrateA;
 }
 
-// ============================================================
-// PICK BEST FORMAT FOR HEIGHT
-// ============================================================
-
 function pickBest(formats, height) {
   const matching = formats.filter(
     (format) =>
@@ -298,19 +295,9 @@ function buildQualities(info, platform) {
     ? info.formats
     : [];
 
-  // ----------------------------------------------------------
-  // Only direct HTTP/HTTPS media formats.
-  // ----------------------------------------------------------
-
   const directFormats = formats.filter(
     isHttpMediaUrl
   );
-
-  // ----------------------------------------------------------
-  // Progressive MP4
-  //
-  // Video + audio in ONE file.
-  // ----------------------------------------------------------
 
   const progressiveMp4 =
     directFormats.filter(
@@ -320,10 +307,6 @@ function buildQualities(info, platform) {
         isMp4(format)
     );
 
-  // ----------------------------------------------------------
-  // MP4 video-only
-  // ----------------------------------------------------------
-
   const videoOnlyMp4 =
     directFormats.filter(
       (format) =>
@@ -331,13 +314,6 @@ function buildQualities(info, platform) {
         !hasAudio(format) &&
         isMp4(format)
     );
-
-  // ----------------------------------------------------------
-  // Audio formats.
-  //
-  // Prefer M4A/MP4 audio because it is easier to merge
-  // into an MP4 on Android.
-  // ----------------------------------------------------------
 
   const audioFormats =
     directFormats.filter(
@@ -371,10 +347,6 @@ function buildQualities(info, platform) {
       ? audioFormats[0]
       : null;
 
-  // ----------------------------------------------------------
-  // Available heights.
-  // ----------------------------------------------------------
-
   const heights = new Set();
 
   for (const format of progressiveMp4) {
@@ -400,21 +372,12 @@ function buildQualities(info, platform) {
 
   const qualities = [];
 
-  // ==========================================================
-  // CREATE ONE QUALITY ENTRY PER HEIGHT
-  // ==========================================================
-
   for (const height of sortedHeights) {
     const progressive =
       pickBest(
         progressiveMp4,
         height
       );
-
-    // --------------------------------------------------------
-    // CASE A:
-    // Progressive MP4 exists.
-    // --------------------------------------------------------
 
     if (progressive) {
       qualities.push({
@@ -444,14 +407,6 @@ function buildQualities(info, platform) {
 
       continue;
     }
-
-    // --------------------------------------------------------
-    // CASE B:
-    // No progressive MP4.
-    //
-    // Use MP4 video-only + separate audio.
-    // Flutter will merge locally.
-    // --------------------------------------------------------
 
     const videoOnly =
       pickBest(
@@ -494,11 +449,6 @@ function buildQualities(info, platform) {
       continue;
     }
 
-    // --------------------------------------------------------
-    // CASE C:
-    // Video exists but audio is unavailable.
-    // --------------------------------------------------------
-
     if (videoOnly) {
       qualities.push({
         id:
@@ -529,10 +479,6 @@ function buildQualities(info, platform) {
       });
     }
   }
-
-  // ==========================================================
-  // PINTEREST MP4 PREFERENCE
-  // ==========================================================
 
   if (platform === "pinterest") {
     qualities.sort((a, b) => {
@@ -571,15 +517,20 @@ function runYtDlp(url) {
       "--no-playlist",
       "--no-check-certificates",
       "--no-cache-dir",
+      "--geo-bypass",
 
       "--user-agent",
       USER_AGENT,
 
+      // Extractor configs for Instagram, Facebook, TikTok, etc.
+      "--extractor-args",
+      "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
+
       "--socket-timeout",
-      "20",
+      "25",
 
       "--retries",
-      "2",
+      "3",
 
       url,
     ];
@@ -630,7 +581,6 @@ function runYtDlp(url) {
       "error",
       (error) => {
         clearTimeout(timeout);
-
         reject(error);
       }
     );
@@ -696,10 +646,6 @@ app.post(
       const url =
         req.body?.url?.toString().trim();
 
-      // ------------------------------------------------------
-      // Validate URL
-      // ------------------------------------------------------
-
       if (!url) {
         return res.status(400).json({
           success: false,
@@ -719,17 +665,17 @@ app.post(
       const platform =
         detectPlatform(url);
 
+      if (platform === "unknown") {
+        return res.status(400).json({
+          success: false,
+          error:
+            "Unsupported or invalid URL. Only Instagram, Facebook, TikTok, Pinterest, and X (Twitter) links are supported.",
+        });
+      }
+
       console.log(
         `[EXTRACT] ${platform}: ${url}`
       );
-
-      // ------------------------------------------------------
-      // IMPORTANT:
-      //
-      // yt-dlp ONLY extracts metadata and direct URLs.
-      //
-      // No media is downloaded by Render.
-      // ------------------------------------------------------
 
       const info =
         await runYtDlp(url);
@@ -760,23 +706,12 @@ app.post(
           ? info.thumbnail.toString()
           : null;
 
-      // ------------------------------------------------------
-      // RESPONSE
-      //
-      // Only JSON metadata + direct media URLs.
-      // ------------------------------------------------------
-
       return res.json({
         success: true,
-
         platform,
-
         sourceUrl: url,
-
         title,
-
         thumbnail,
-
         qualities,
       });
     } catch (error) {
@@ -816,20 +751,7 @@ app.listen(PORT, () => {
   console.log(
     `StreamBox backend running on port ${PORT}`
   );
-
   console.log(
     `yt-dlp path: ${YTDLP_PATH}`
-  );
-
-  console.log(
-    "Server media download: DISABLED"
-  );
-
-  console.log(
-    "Server FFmpeg: DISABLED"
-  );
-
-  console.log(
-    "Client-side media download: ENABLED"
   );
 });
