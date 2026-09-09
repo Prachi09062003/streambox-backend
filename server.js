@@ -4,6 +4,8 @@ const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const https = require("https");
+const http = require("http");
 
 const app = express();
 
@@ -33,7 +35,7 @@ app.use(
 app.use(express.json({ limit: "1mb" }));
 
 // ============================================================
-// PLATFORM DETECTION
+// PLATFORM DETECTION & REDIRECT RESOLVER
 // ============================================================
 
 function detectPlatform(url) {
@@ -55,6 +57,25 @@ function isValidHttpUrl(value) {
   }
 }
 
+// FIX 1: Manually unwrap shortlinks (Pinterest) to prevent 500 crashes
+function unwrapUrl(url) {
+  return new Promise((resolve) => {
+    if (!url.includes("pin.it") && !url.includes("vm.tiktok.com")) {
+      return resolve(url);
+    }
+    
+    const client = url.startsWith("https") ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        resolve(res.headers.location);
+      } else {
+        resolve(url);
+      }
+    });
+    req.on("error", () => resolve(url));
+  });
+}
+
 // ============================================================
 // SHARED YT-DLP ARGUMENTS
 // ============================================================
@@ -72,8 +93,8 @@ function getStandardArgs() {
 // API: EXTRACT (Generates Tunnel Link)
 // ============================================================
 
-app.post("/api/extract", (req, res) => {
-  const url = req.body?.url?.toString().trim();
+app.post("/api/extract", async (req, res) => {
+  let url = req.body?.url?.toString().trim();
   
   if (!url || !isValidHttpUrl(url)) {
     return res.status(400).json({ success: false, error: "Please enter a valid HTTP/HTTPS URL." });
@@ -84,9 +105,10 @@ app.post("/api/extract", (req, res) => {
     return res.status(400).json({ success: false, error: "Unsupported URL. Only social platforms are supported." });
   }
 
+  // Unwrap URL if it's a shortlink
+  url = await unwrapUrl(url);
   console.log(`[EXTRACT] ${platform}: ${url}`);
 
-  // Fetch only the metadata. We no longer parse the complex CDN streams.
   const args = [
     "--dump-single-json", 
     "--skip-download", 
@@ -116,8 +138,7 @@ app.post("/api/extract", (req, res) => {
     try {
       const info = JSON.parse(stdout);
 
-      // THE FIX: Instead of giving the mobile app fragile CDN links, 
-      // we provide one guaranteed Tunnel Link routed through this server.
+      // Route the app to our proxy endpoint
       const proxyUrl = `${req.protocol}://${req.get("host")}/api/proxy?url=${encodeURIComponent(url)}`;
       
       const qualities = [
@@ -152,22 +173,24 @@ app.post("/api/extract", (req, res) => {
 // API: SERVER PROXY DOWNLOADER (Solves Audio & 500 Errors)
 // ============================================================
 
-app.get("/api/proxy", (req, res) => {
-  const targetUrl = req.query.url;
+app.get("/api/proxy", async (req, res) => {
+  let targetUrl = req.query.url;
   if (!targetUrl || !isValidHttpUrl(targetUrl)) {
     return res.status(400).send("Valid URL required");
   }
 
-  // Create a unique temporary file for FFmpeg to build the MP4
+  // Unwrap URL if it's a shortlink
+  targetUrl = await unwrapUrl(targetUrl);
+
   const fileName = `streambox_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`;
   const filePath = path.join(os.tmpdir(), fileName);
 
-  console.log(`[PROXY START] Compiling MP4 for: ${targetUrl}`);
+  console.log(`[PROXY START] Downloading pre-merged MP4 for: ${targetUrl}`);
 
-  // Instructs the server to download the best video and audio, merge them into a standard MP4, and save to temp
+  // FIX 2: -f "b[ext=mp4]/best" forces yt-dlp to grab a pre-combined video+audio file.
+  // This bypasses FFmpeg merging entirely, preventing silent Instagram videos and 500 crashes.
   const args = [
-    "-f", "b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]/b/best",
-    "--merge-output-format", "mp4",
+    "-f", "b[ext=mp4]/best",
     "-o", filePath,
     "--quiet",
     "--no-warnings",
@@ -183,13 +206,18 @@ app.get("/api/proxy", (req, res) => {
       
       // Stream the compiled file directly to the Flutter client
       res.download(filePath, "video.mp4", (err) => {
-        // Delete the file immediately after sending to save Render disk space
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        try {
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch (cleanupErr) {
+          console.error("[CLEANUP ERROR]", cleanupErr);
+        }
       });
     } else {
       console.error(`[PROXY FAILED] Exit code: ${code}`);
-      if (!res.headersSent) res.status(500).send("Server conversion failed");
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      if (!res.headersSent) res.status(500).send("Server extraction failed.");
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch (e) {}
     }
   });
 });
@@ -198,10 +226,10 @@ app.get("/api/proxy", (req, res) => {
 // SYSTEM
 // ============================================================
 
-app.get("/", (req, res) => res.json({ success: true, status: "online", mode: "Pure Tunnel MP4" }));
+app.get("/", (req, res) => res.json({ success: true, status: "online", mode: "Pure Tunnel Pre-Merged MP4" }));
 app.use((req, res) => res.status(404).json({ success: false, error: "Not found." }));
 
 app.listen(PORT, () => {
   console.log(`StreamBox backend running on port ${PORT}`);
-  console.log(`Mode: Pure Tunnel MP4 via /api/proxy active`);
+  console.log(`Mode: Pure Tunnel Pre-Merged MP4 via /api/proxy active`);
 });
