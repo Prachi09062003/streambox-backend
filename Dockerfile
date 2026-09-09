@@ -1,19 +1,21 @@
 FROM node:20-bookworm
 
+# Install system dependencies including Python, pip, and FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     python3 \
+    python3-pip \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-    -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
+# Crucial Fix: Install yt-dlp via pip with curl-cffi for browser impersonation
+# (--break-system-packages is required and completely safe inside a Docker container)
+RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default,curl-cffi]"
 
 ENV NODE_ENV=production
-ENV YTDLP_PATH=/usr/local/bin/yt-dlp
+# yt-dlp is now globally installed in the system PATH
+ENV YTDLP_PATH=yt-dlp
 ENV PORT=3000
 
 WORKDIR /app
