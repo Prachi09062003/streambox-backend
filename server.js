@@ -59,7 +59,7 @@ function isValidHttpUrl(value) {
 }
 
 // ============================================================
-// REDIRECT RESOLVER (Bypasses Pinterest 403 / Login Blocks)
+// REDIRECT RESOLVER (Bypasses Multi-Hop Pinterest Redirects)
 // ============================================================
 
 async function unwrapUrl(targetUrl) {
@@ -70,11 +70,10 @@ async function unwrapUrl(targetUrl) {
   console.log(`[UNWRAP] Unwrapping shortlink: ${targetUrl}`);
   
   try {
-    // We use native fetch to securely inject the iPhone User-Agent.
-    // redirect: "manual" prevents it from auto-following, allowing us to grab the true URL.
+    // By omitting 'redirect: "manual"', fetch automatically follows the entire chain 
+    // of redirects (double/triple bounces) until it reaches the final web page.
     const response = await fetch(targetUrl, {
       method: "GET",
-      redirect: "manual",
       headers: {
         "User-Agent": USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -82,13 +81,13 @@ async function unwrapUrl(targetUrl) {
       }
     });
 
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (location) {
-        console.log(`[UNWRAP] Resolved to: ${location}`);
-        return location;
-      }
+    if (response.url) {
+      // Clean up tracking parameters to give yt-dlp a clean, canonical URL
+      const cleanUrl = response.url.split('?')[0];
+      console.log(`[UNWRAP] Resolved to final URL: ${cleanUrl}`);
+      return cleanUrl;
     }
+    
     return targetUrl;
   } catch (e) {
     console.error("[UNWRAP ERROR]", e.message);
@@ -104,7 +103,6 @@ function getStandardArgs() {
   return [
     "--geo-bypass",
     "--impersonate", "chrome",
-    // We add a fake Referer header to trick Pinterest's hotlink protection
     "--add-header", "Referer: https://www.pinterest.com/",
     "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
     "--no-cache-dir",
@@ -127,7 +125,7 @@ app.post("/api/extract", async (req, res) => {
     return res.status(400).json({ success: false, error: "Unsupported URL. Only social platforms are supported." });
   }
 
-  // Unwrap URL if it's a shortlink to bypass initial bot detection
+  // Unwrap URL through all redirect layers
   url = await unwrapUrl(url);
   console.log(`[EXTRACT] ${platform}: ${url}`);
 
@@ -163,7 +161,6 @@ app.post("/api/extract", async (req, res) => {
     try {
       const info = JSON.parse(stdout);
 
-      // Route the app to our proxy endpoint
       const proxyUrl = `${req.protocol}://${req.get("host")}/api/proxy?url=${encodeURIComponent(url)}`;
       
       const qualities = [
@@ -204,7 +201,6 @@ app.get("/api/proxy", async (req, res) => {
     return res.status(400).send("Valid URL required");
   }
 
-  // Double check shortlinks for the proxy route
   targetUrl = await unwrapUrl(targetUrl);
 
   const fileName = `streambox_${Date.now()}_${Math.floor(Math.random() * 1000)}.mp4`;
@@ -212,7 +208,6 @@ app.get("/api/proxy", async (req, res) => {
 
   console.log(`[PROXY START] Downloading pre-merged MP4 for: ${targetUrl}`);
 
-  // Force pre-combined video+audio file to prevent Instagram/Pinterest merging crashes
   const args = [
     "-f", "b[ext=mp4]/best",
     "-o", filePath,
@@ -228,7 +223,6 @@ app.get("/api/proxy", async (req, res) => {
     if (code === 0 && fs.existsSync(filePath)) {
       console.log(`[PROXY SUCCESS] Streaming ${fileName} to mobile app`);
       
-      // Stream the compiled file directly to the Flutter client
       res.download(filePath, "video.mp4", (err) => {
         try {
           if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
