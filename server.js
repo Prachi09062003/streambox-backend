@@ -113,12 +113,21 @@ async function unwrapUrl(targetUrl) {
 }
 
 function getStandardArgs() {
-  return [
+  const args = [
     "--geo-bypass",
     "--impersonate", "chrome",
-    "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com",
+    "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=://tiktokv.com",
     "--no-cache-dir",
+    "--ffmpeg-location", "/usr/bin/ffmpeg"
   ];
+
+  // Load cookies if deployed to the server to unblock restricted/licensed audio
+  const cookiesPath = path.join(__dirname, "instagram-cookies.txt");
+  if (fs.existsSync(cookiesPath)) {
+    args.push("--cookies", cookiesPath);
+  }
+
+  return args;
 }
 
 function getAvailableHeights(info) {
