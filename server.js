@@ -4,6 +4,7 @@ const { spawn, execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const ffmpegPath = require("ffmpeg-static");
 
 const app = express();
 
@@ -118,7 +119,7 @@ function getStandardArgs() {
     "--impersonate", "chrome",
     "--extractor-args", "instagram:api_hostname=i.instagram.com;facebook:mweb=1;tiktok:api_hostname=://tiktokv.com",
     "--no-cache-dir",
-    "--ffmpeg-location", "/usr/bin/ffmpeg"
+    "--ffmpeg-location", ffmpegPath 
   ];
 
   // Load cookies if deployed to the server to unblock restricted/licensed audio
@@ -312,10 +313,10 @@ app.get("/api/proxy", async (req, res) => {
 
   console.log(`[PROXY START] Processing ${targetHeight ? targetHeight + 'p' : 'Best'} for: ${targetUrl}`);
 
-  let formatFilter = "bv*+ba/b/best"; 
+  let formatFilter = "bestvideo+bestaudio/best"; 
   if (targetHeight && !isNaN(parseInt(targetHeight))) {
     const h = parseInt(targetHeight);
-    formatFilter = `bv*[height<=${h}]+ba/b[height<=${h}]/best`;
+    formatFilter = `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]/best`;
   }
 
   const args = [
